@@ -17,17 +17,18 @@ type CircuitRace = {
   course: CourseFeatures & { length: number; obstacles: { id: string; progress: number; blockedLane: number; junctionId?: string; route?: RouteChoice }[] };
   players: Record<DriverId, { progress: number; lane: number; speed: number; slowedUntil: number; routeChoices?: Record<string, RouteChoice> }>;
 };
-export type RaceCircuit3DProps = { race: CircuitRace; decorative?: boolean; onUnavailable?: () => void };
+export type RaceCircuit3DProps = { race: CircuitRace; decorative?: boolean; onUnavailable?: () => void; sampleRace?: (timestamp: number) => CircuitRace | undefined };
 const DRIVERS: DriverId[] = ["red", "blue"];
 const COLORS = { red: 0xff625b, blue: 0x5aa4ff };
 
 /** Renders server-authoritative positions and routes; it does not simulate a second race. */
-export function RaceCircuit3D({ race, decorative = false, onUnavailable }: RaceCircuit3DProps) {
+export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleRace }: RaceCircuit3DProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const shotLabelRef = useRef<HTMLSpanElement>(null);
   const labelsRef = useRef<Record<DriverId, HTMLDivElement | null>>({ red: null, blue: null });
   const latest = useRef(race); latest.current = race;
+  const sampleRef = useRef(sampleRace); sampleRef.current = sampleRace;
   const unavailableRef = useRef(onUnavailable); unavailableRef.current = onUnavailable;
   const viewRef = useRef<View>(decorative ? "overview" : "auto");
   const [view, setView] = useState<View>(decorative ? "overview" : "auto");
@@ -45,7 +46,9 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable }: RaceC
     let renderer: THREE.WebGLRenderer;
     try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: "high-performance" }); }
     catch { fail(); return; }
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+    const maxPixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+    let pixelRatio = maxPixelRatio;
+    renderer.setPixelRatio(pixelRatio);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.28;
@@ -65,9 +68,17 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable }: RaceC
     const white = material(0xe3e9df), lime = material(0xd7ee8d), grass = material(0x315b53);
     const rail = material(0x4b6871, 0.5, 0.2), orange = material(0xffa64d), cyan = material(0x61ccd4);
     concrete.side = THREE.DoubleSide;
+    // Seats, supports and buildings share one geometry and one draw per material.
+    const unitBox = new THREE.BoxGeometry(1, 1, 1);
+    assets.add(new THREE.Mesh(unitBox, dark));
+    const boxBatches = new Map<string, { parent: THREE.Object3D; material: THREE.Material; matrices: THREE.Matrix4[] }>();
+    const boxTransform = new THREE.Object3D();
     const box = (w: number, h: number, d: number, mat: THREE.Material, x: number, y: number, z: number, parent: THREE.Object3D = group) => {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-      mesh.position.set(x, y, z); mesh.castShadow = true; mesh.receiveShadow = true; parent.add(mesh); return mesh;
+      const key = `${parent.uuid}:${mat.uuid}`;
+      let batch = boxBatches.get(key);
+      if (!batch) { batch = { parent, material: mat, matrices: [] }; boxBatches.set(key, batch); }
+      boxTransform.position.set(x, y, z); boxTransform.scale.set(w, h, d); boxTransform.updateMatrix();
+      batch.matrices.push(boxTransform.matrix.clone());
     };
     const textPlane = (text: string, textWidth: number, color: string, x: number, y: number, z: number, heading = 0) => {
       const bitmap = document.createElement("canvas"); bitmap.width = 1024; bitmap.height = 160;
@@ -175,13 +186,21 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable }: RaceC
       box(34, 0.28, 9.5, dark, standX, 6.8, standZ + 3.7);
     }
     const treeGeometry = new THREE.ConeGeometry(1.5, 5, 7), treeMaterial = material(0x49856a); assets.add(new THREE.Mesh(treeGeometry, treeMaterial));
+    const trees = new THREE.InstancedMesh(treeGeometry, treeMaterial, 32);
+    const treeTransform = new THREE.Object3D();
     for (let i = 0; i < 32; i++) {
       const x = -bounds.width / 2 + 9 + i * (bounds.width - 18) / 31, z = -bounds.depth / 2 + 3 + Math.sin(i * 1.8) * 3;
-      const tree = new THREE.Mesh(treeGeometry, treeMaterial); tree.position.set(x, 2.15, z); tree.castShadow = true; group.add(tree);
+      treeTransform.position.set(x, 2.15, z); treeTransform.updateMatrix(); trees.setMatrixAt(i, treeTransform.matrix);
+    }
+    trees.instanceMatrix.needsUpdate = true; trees.castShadow = true; group.add(trees);
+    for (const batch of boxBatches.values()) {
+      const mesh = new THREE.InstancedMesh(unitBox, batch.material, batch.matrices.length);
+      batch.matrices.forEach((matrix, index) => mesh.setMatrixAt(index, matrix));
+      mesh.instanceMatrix.needsUpdate = true; mesh.castShadow = true; mesh.receiveShadow = true; batch.parent.add(mesh);
     }
     textPlane(complex ? COURSE_NAMES[course.layout!] : "AGENT GRAND PRIX", 38, "#b5d4c4", 0, -0.35, complex ? -62 : 0);
     scene.add(new THREE.HemisphereLight(0xc5e9ff, 0x354936, 2.3));
-    const sun = new THREE.DirectionalLight(0xfff1d4, 3.4); sun.position.set(-45, 115, 60); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+    const sun = new THREE.DirectionalLight(0xfff1d4, 3.4); sun.position.set(-45, 115, 60); sun.castShadow = true; sun.shadow.mapSize.set(1024, 1024);
     Object.assign(sun.shadow.camera, { left: -145, right: 145, top: 110, bottom: -110, near: 1, far: 250 }); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.05; scene.add(sun);
     const fill = new THREE.DirectionalLight(0x87baff, 1.1); fill.position.set(25, 35, -45); scene.add(fill);
 
@@ -224,12 +243,16 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable }: RaceC
     const resize = () => { const rect = canvas.getBoundingClientRect(); width = Math.max(1, rect.width); height = Math.max(1, rect.height); renderer.setSize(width, height, false); };
     const observer = new ResizeObserver(resize); observer.observe(canvas); resize();
     const handleContextLost = (event: Event) => { event.preventDefault(); lostContext = true; cancelAnimationFrame(frame); fail(); }; canvas.addEventListener("webglcontextlost", handleContextLost);
+    let measureStart = 0, intervals: number[] = [], slowWindows = 0, fastWindows = 0;
     const draw = (timestamp: number) => {
       if (disposed || lostContext) return;
       frame = requestAnimationFrame(draw);
-      if (document.hidden || timestamp - previousFrame < 1000 / 40) return;
-      const dt = previousFrame ? Math.min((timestamp - previousFrame) / 1000, 0.1) : 0; previousFrame = timestamp;
-      const current = latest.current;
+      if (document.hidden) { previousFrame = 0; intervals = []; measureStart = 0; return; }
+      const interval = previousFrame ? timestamp - previousFrame : 0;
+      const dt = Math.min(interval / 1000, 0.1); previousFrame = timestamp;
+      // Consume buffered authoritative positions at display cadence. React only
+      // handles controls and network snapshots, never the animation clock.
+      const current = sampleRef.current?.(timestamp) ?? latest.current;
       const positions = DRIVERS.map(id => ({ ...circuitPosition(current.players[id].progress, current.players[id].lane, course.length, course, current.players[id].routeChoices), speed: current.players[id].speed }));
       DRIVERS.forEach((id, index) => {
         const p = positions[index], car = cars[id], player = current.players[id];
@@ -275,6 +298,28 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable }: RaceC
         label.style.transform = `translate(${x}px, ${y - (close && index === 1 ? 33 : 0)}px) translate(-50%, -100%)`;
       });
       renderer.render(scene, camera);
+      if (!measureStart) measureStart = timestamp;
+      if (interval > 0) intervals.push(interval);
+      if (timestamp - measureStart >= 2000 && intervals.length) {
+        const sorted = [...intervals].sort((a, b) => a - b);
+        const mean = intervals.reduce((sum, value) => sum + value, 0) / intervals.length;
+        const stage = stageRef.current;
+        if (stage) {
+          stage.dataset.renderFps = (1000 / mean).toFixed(1);
+          stage.dataset.frameP50Ms = sorted[Math.floor(sorted.length * 0.5)].toFixed(1);
+          stage.dataset.frameP95Ms = sorted[Math.floor(sorted.length * 0.95)].toFixed(1);
+          stage.dataset.drawCalls = String(renderer.info.render.calls);
+          stage.dataset.triangles = String(renderer.info.render.triangles);
+          stage.dataset.pixelRatio = pixelRatio.toFixed(2);
+        }
+        // Hysteresis prevents resolution flicker; reduce fill-rate on slower GPUs.
+        slowWindows = mean > 22 ? slowWindows + 1 : 0;
+        fastWindows = mean < 17.5 ? fastWindows + 1 : 0;
+        const nextRatio = slowWindows >= 3 ? Math.max(Math.min(1, maxPixelRatio), pixelRatio - 0.25)
+          : fastWindows >= 6 ? Math.min(maxPixelRatio, pixelRatio + 0.25) : pixelRatio;
+        if (nextRatio !== pixelRatio) { pixelRatio = nextRatio; renderer.setPixelRatio(pixelRatio); resize(); slowWindows = fastWindows = 0; }
+        measureStart = timestamp; intervals = [];
+      }
     };
     frame = requestAnimationFrame(draw);
     return () => { disposed = true; abort.abort(); cancelAnimationFrame(frame); observer.disconnect(); motionPreference.removeEventListener("change", onMotionPreference); canvas.removeEventListener("webglcontextlost", handleContextLost); sun.shadow.map?.dispose(); disposeRoots(roots); renderer.renderLists.dispose(); renderer.dispose(); };
@@ -295,11 +340,14 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable }: RaceC
 /** Dispose shared cloned meshes exactly once, including texture-backed canvas labels. */
 function disposeRoots(roots: Iterable<THREE.Object3D>) {
   const geometries = new Set<THREE.BufferGeometry>(), materials = new Set<THREE.Material>(), textures = new Set<THREE.Texture>();
+  const instances = new Set<THREE.InstancedMesh>();
   for (const root of roots) root.traverse(object => {
     if (!(object instanceof THREE.Mesh) && !(object instanceof THREE.Line)) return;
+    if (object instanceof THREE.InstancedMesh) instances.add(object);
     geometries.add(object.geometry);
     for (const material of Array.isArray(object.material) ? object.material : [object.material]) { materials.add(material); for (const value of Object.values(material)) if (value instanceof THREE.Texture) textures.add(value); }
   });
+  instances.forEach(instance => instance.dispose());
   geometries.forEach(geometry => geometry.dispose()); materials.forEach(material => material.dispose());
   textures.forEach(texture => { const image = texture.image; texture.dispose(); if (typeof ImageBitmap !== "undefined" && image instanceof ImageBitmap) image.close(); });
 }

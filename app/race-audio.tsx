@@ -8,7 +8,7 @@ type Phase = "lobby" | "countdown" | "racing" | "finished" | "cancelled";
 type AudioStatus = "standby" | "ready" | "starting" | "playing" | "blocked" | "muted" | "error";
 
 /** One spectator-owned audio element. Driver pages should not mount this component. */
-export function RaceAudio({ phase, raceId }: { phase: Phase; raceId: string }) {
+export function RaceAudio({ phase, raceId, compact = false }: { phase: Phase; raceId: string; compact?: boolean }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const latest = useRef({ phase, raceId });
   latest.current = { phase, raceId };
@@ -107,7 +107,7 @@ export function RaceAudio({ phase, raceId }: { phase: Phase; raceId: string }) {
     : status === "blocked" || phase === "racing" ? "音楽を再生"
     : "音楽を有効にする";
 
-  return <section className={`race-audio ${status === "playing" ? "is-playing" : ""}`} aria-label="レースBGM">
+  return <section className={`race-audio ${status === "playing" ? "is-playing" : ""} ${compact ? "compact" : ""}`} aria-label="レースBGM">
     <audio ref={audioRef} src="/audio/turbo-battle-final-lap.mp3" preload="auto" loop hidden
       onError={() => { if (mounted.current) { stop(); setStatus("error"); } }} />
     <div className="race-audio-track">
