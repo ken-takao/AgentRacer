@@ -1,0 +1,187 @@
+{
+  "image": "roadster_8dir_sheet.png",
+  "web_image": "roadster_8dir_sheet.webp",
+  "format": "RGBA PNG",
+  "frame_size": [
+    512,
+    512
+  ],
+  "layout": {
+    "columns": 4,
+    "rows": 2
+  },
+  "direction_order": [
+    "front",
+    "front_left",
+    "left",
+    "rear_left",
+    "rear",
+    "rear_right",
+    "right",
+    "front_right"
+  ],
+  "coordinate_notes": "front is the vehicle nose; left/right describe the visible camera side",
+  "frames": {
+    "front": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 512,
+        "h": 512
+      },
+      "source": "front.png",
+      "content_bounds": {
+        "left": 164,
+        "top": 165,
+        "right": 348,
+        "bottom": 376
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.7344
+      },
+      "angle_degrees_from_front": 0
+    },
+    "front_left": {
+      "frame": {
+        "x": 512,
+        "y": 0,
+        "w": 512,
+        "h": 512
+      },
+      "source": "front_left.png",
+      "content_bounds": {
+        "left": 67,
+        "top": 168,
+        "right": 450,
+        "bottom": 372
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.7266
+      },
+      "angle_degrees_from_front": 45
+    },
+    "left": {
+      "frame": {
+        "x": 1024,
+        "y": 0,
+        "w": 512,
+        "h": 512
+      },
+      "source": "left.png",
+      "content_bounds": {
+        "left": 49,
+        "top": 189,
+        "right": 461,
+        "bottom": 339
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.6621
+      },
+      "angle_degrees_from_front": 90
+    },
+    "rear_left": {
+      "frame": {
+        "x": 1536,
+        "y": 0,
+        "w": 512,
+        "h": 512
+      },
+      "source": "rear_left.png",
+      "content_bounds": {
+        "left": 67,
+        "top": 175,
+        "right": 450,
+        "bottom": 372
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.7266
+      },
+      "angle_degrees_from_front": 135
+    },
+    "rear": {
+      "frame": {
+        "x": 0,
+        "y": 512,
+        "w": 512,
+        "h": 512
+      },
+      "source": "rear.png",
+      "content_bounds": {
+        "left": 164,
+        "top": 175,
+        "right": 348,
+        "bottom": 376
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.7344
+      },
+      "angle_degrees_from_front": 180
+    },
+    "rear_right": {
+      "frame": {
+        "x": 512,
+        "y": 512,
+        "w": 512,
+        "h": 512
+      },
+      "source": "rear_right.png",
+      "content_bounds": {
+        "left": 62,
+        "top": 175,
+        "right": 445,
+        "bottom": 372
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.7266
+      },
+      "angle_degrees_from_front": 225
+    },
+    "right": {
+      "frame": {
+        "x": 1024,
+        "y": 512,
+        "w": 512,
+        "h": 512
+      },
+      "source": "right.png",
+      "content_bounds": {
+        "left": 51,
+        "top": 189,
+        "right": 463,
+        "bottom": 339
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.6621
+      },
+      "angle_degrees_from_front": 270
+    },
+    "front_right": {
+      "frame": {
+        "x": 1536,
+        "y": 512,
+        "w": 512,
+        "h": 512
+      },
+      "source": "front_right.png",
+      "content_bounds": {
+        "left": 62,
+        "top": 168,
+        "right": 445,
+        "bottom": 372
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.7266
+      },
+      "angle_degrees_from_front": 315
+    }
+  },
+  "top_view": "top.png"
+}
