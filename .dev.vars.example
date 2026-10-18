@@ -1,0 +1,4 @@
+# Copy to .dev.vars. Use the same private admin key on the deployed game.
+RACE_ADMIN_KEY=
+# Set the HTTPS origin of your deployed game. Hosted agents cannot reach localhost.
+GAME_ORIGIN=

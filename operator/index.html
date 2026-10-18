@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agent Grand Prix — Operator</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#080c13;color:#eaf1f8}*{box-sizing:border-box}body{margin:0;padding:40px 24px}main{max-width:1060px;margin:auto}.eyebrow{font:700 12px ui-monospace,monospace;letter-spacing:.2em;color:#85e1e1}h1{font-size:clamp(32px,6vw,60px);letter-spacing:-.05em;margin:15px 0}p{color:#94a5b8;line-height:1.8}.actions{display:flex;gap:12px;flex-wrap:wrap;margin:28px 0}button,a.button{border:0;border-radius:10px;padding:14px 21px;font:700 14px inherit;cursor:pointer;text-decoration:none}button.primary{background:#b9f560;color:#14200a}button.secondary,a.button{background:#202b3a;color:#eaf1f8}button:disabled{opacity:.4;cursor:not-allowed}.status{border:1px solid #263447;border-radius:16px;padding:24px;margin-bottom:20px;background:#101722}.status-head{display:flex;justify-content:space-between;gap:15px;align-items:center}.pill{font:700 12px ui-monospace,monospace;color:#b9f560;background:#1c2d22;padding:7px 10px;border-radius:20px}.cards{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{background:#101722;border:1px solid #263447;border-radius:16px;padding:24px;min-width:0}.card.red{border-top:3px solid #ff6868}.card.blue{border-top:3px solid #6aaaff}.card h2{font-size:18px;margin:0 0 20px}.metrics{display:flex;gap:30px;margin-bottom:15px}.metrics strong{display:block;font:700 30px ui-monospace,monospace}.metrics span{color:#94a5b8;font-size:12px}.session{font:11px ui-monospace,monospace;overflow-wrap:anywhere;color:#8e9fb4}.log{margin-top:20px;border:1px solid #263447;border-radius:16px;overflow:hidden}.log h2{font-size:14px;margin:0;padding:18px 24px;border-bottom:1px solid #263447}.log-list{height:290px;overflow:auto;padding:12px 24px;display:flex;flex-direction:column-reverse;gap:10px;font:12px/1.6 ui-monospace,monospace}.log-line{display:flex;gap:14px}.log-time{color:#65778d;flex-shrink:0}.log-message{overflow-wrap:anywhere}.error{color:#ffa39d;white-space:pre-wrap}.note{font-size:12px}.hidden{display:none!important}@media(max-width:600px){body{padding:28px 16px}.cards{grid-template-columns:1fr}.metrics{gap:25px}.status-head{align-items:flex-start;flex-direction:column}}
+</style></head><body><main>
+<div class="eyebrow">LOCAL OPERATOR · 2 INDEPENDENT BROWSERS</div><h1>Agent Grand Prix</h1>
+<p>2つのComputer Useエージェントが、同じコースをリアルタイムで走ります。<br>この画面から起動し、公開の観戦ページでレースと取得画面を見られます。</p>
+<div class="actions"><button id="start" class="primary">2つのエージェントを起動</button><button id="stop" class="secondary" disabled>レースを停止</button><button id="reset" class="secondary" disabled>表示をリセット</button><a id="spectator" class="button hidden" target="_blank" rel="noopener noreferrer">観戦ページを開く ↗</a></div>
+<p id="restart-help" class="note">開始すると新しい観戦タブを開きます。2つのセッションは毎回新しく作成します。</p><section class="status"><div class="status-head"><strong id="message">状態を取得しています。</strong><span id="stage" class="pill">IDLE</span></div><p id="phase">GAME —</p><div id="error" class="error"></div></section>
+<section class="cards"><article class="card red"><h2>RED DRIVER</h2><div class="metrics"><div><strong id="red-actions">0</strong><span>ブラウザー操作</span></div><div><strong id="red-images">0</strong><span>取得画面</span></div></div><p id="red-status">待機中</p><div id="red-session" class="session">—</div><p id="red-cleanup" class="note"></p></article><article class="card blue"><h2>BLUE DRIVER</h2><div class="metrics"><div><strong id="blue-actions">0</strong><span>ブラウザー操作</span></div><div><strong id="blue-images">0</strong><span>取得画面</span></div></div><p id="blue-status">待機中</p><div id="blue-session" class="session">—</div><p id="blue-cleanup" class="note"></p></article></section>
+<section class="log"><h2>実行ログ</h2><div id="logs" class="log-list"></div></section>
+<p class="note">APIキーはこのPCのサーバー側で読み込みます。実行するとOpenAI APIを利用します。観戦画面のブラウザー画像は操作ごとに届くスクリーンショットです。</p>
+</main><script>
+const $ = id => document.getElementById(id);
+let busy = false;
+let version = 0;
+let pendingViewer = null;
+let pendingRunId = null;
+let requestError = '';
+
+function draw(state) {
+  $('message').textContent = state.message;
+  $('stage').textContent = state.stage.toUpperCase();
+  $('phase').textContent = 'GAME ' + (state.gamePhase || '—') + (state.winner ? ' · WINNER ' + String(state.winner).toUpperCase() : '');
+  $('error').textContent = requestError || state.error || '';
+  const terminal = ['completed', 'cancelled', 'failed'].includes(state.stage);
+  const active = state.stage !== 'idle' && !terminal;
+  $('start').disabled = busy || !state.canStart;
+  $('start').textContent = terminal ? '新しいレースを開始' : active ? 'レース実行中…' : '2つのエージェントを起動';
+  $('stop').disabled = busy || !active || state.stage === 'stopping';
+  $('reset').disabled = busy || !state.canReset;
+  $('reset').textContent = state.cleanupPending ? '終了処理を再試行してリセット' : '表示をリセット';
+  $('restart-help').textContent = state.cleanupPending
+    ? '前のセッションの終了を確認してから再対戦できます。「終了処理を再試行してリセット」を押してください。'
+    : terminal ? '「新しいレースを開始」で再対戦できます。表示のリセットだけではAPIを起動しません。過去の試合結果は残ります。'
+    : active ? '停止後は、2つのセッションの終了処理が完了すると再対戦できます。'
+    : '開始すると新しい観戦タブを開きます。2つのセッションは毎回新しく作成します。';
+  if (state.spectatorUrl) {
+    $('spectator').href = state.spectatorUrl;
+    $('spectator').textContent = terminal ? 'この試合の結果を見る ↗' : 'このレースを観戦する ↗';
+    $('spectator').classList.remove('hidden');
+  } else $('spectator').classList.add('hidden');
+  if (pendingViewer && state.id === pendingRunId) {
+    if (state.spectatorUrl) {
+      try { if (!pendingViewer.closed) pendingViewer.location.replace(state.spectatorUrl); } catch { /* The visible link remains available. */ }
+      pendingViewer = null;
+      pendingRunId = null;
+    } else if (terminal) closePendingViewer();
+  }
+  for (const color of ['red', 'blue']) {
+    const p = state.players?.[color] || {};
+    $(color + '-actions').textContent = p.actions || 0;
+    $(color + '-images').textContent = p.screenshots || 0;
+    $(color + '-status').textContent = p.status || '待機中';
+    $(color + '-session').textContent = p.sessionId || '—';
+    $(color + '-cleanup').textContent = p.cleanupDeleted ? 'セッション削除を確認済み' : p.cleanupError ? '削除の確認に失敗: ' + p.cleanupError : '';
+  }
+  const fragment = document.createDocumentFragment();
+  for (const item of [...(state.logs || [])].reverse()) {
+    const row = document.createElement('div'); row.className = 'log-line';
+    const time = document.createElement('span'); time.className = 'log-time';
+    time.textContent = new Date(item.at).toLocaleTimeString('ja-JP');
+    const text = document.createElement('span'); text.className = 'log-message';
+    text.textContent = (item.player ? '[' + item.player.toUpperCase() + '] ' : '') + item.message;
+    row.append(time, text); fragment.append(row);
+  }
+  $('logs').replaceChildren(fragment);
+}
+function closePendingViewer() {
+  try { pendingViewer?.close(); } catch { /* The user may have closed the tab. */ }
+  pendingViewer = null; pendingRunId = null;
+}
+async function api(path, method = 'GET') {
+  const response = await fetch(path, { method, cache: 'no-store', ...(method === 'POST' ? { headers: { 'Content-Type': 'application/json' }, body: '{}' } : {}) });
+  const data = await response.json();
+  if (!response.ok) throw Error(data.error || 'リクエストに失敗しました。');
+  return data;
+}
+async function refresh() {
+  if (busy) return;
+  const snapshot = version;
+  try { const state = await api('/api/status'); if (!busy && snapshot === version) draw(state); }
+  catch (error) { if (snapshot === version) $('error').textContent = '操作サーバーに接続できません。npm run operator で起動してください。 ' + error.message; }
+}
+async function action(path) {
+  if (busy) return;
+  busy = true; version++; requestError = '';
+  for (const id of ['start', 'stop', 'reset']) $(id).disabled = true;
+  if (path === '/api/start') {
+    pendingViewer = window.open('about:blank', '_blank');
+    if (pendingViewer) {
+      pendingViewer.opener = null;
+      pendingViewer.document.title = 'レースを準備しています';
+      pendingViewer.document.body.textContent = '新しいレースを準備しています。まもなく観戦画面に移動します。';
+    }
+  }
+  try {
+    const state = await api(path, 'POST');
+    if (path === '/api/start') pendingRunId = state.id;
+    draw(state);
+  } catch (error) {
+    requestError = error.message;
+    if (path === '/api/start') closePendingViewer();
+  } finally { busy = false; await refresh(); }
+}
+$('start').onclick = () => action('/api/start');
+$('stop').onclick = () => action('/api/stop');
+$('reset').onclick = () => action('/api/reset');
+refresh(); setInterval(refresh, 1000);
+</script></body></html>
