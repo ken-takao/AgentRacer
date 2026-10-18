@@ -77,6 +77,18 @@ The visual decision client is `operator/drive-decisions.mjs`. It uses `POST /v1/
 
 The public `/api/races/:id/decisions` feed contains only allowlisted decisions and metrics; writes require the race admin key and are ordered by timestamp/count. Older races can have no decision feed. Deploy the site update before starting this operator.
 
+Jump strategy is shared by visual/text and ghost/solid decisions. The model first
+checks the **JUMP** control (not the race-joining READY button), the obstacle's
+lane/route and distance divided by speed, then considers the delayed click and
+0.8-second airborne window. A feasible imminent jump is preferred over needless
+lane changes or braking, even when another lane is clear. A distant obstacle,
+cooldown, spin, airborne state or non-racing phase must not trigger a jump.
+Selecting JUMP still means one immediate Computer Use click; it does not arm an
+automatic or scheduled jump. These priorities do not remove variable CU latency
+or establish a measured improvement in real-race obstacle avoidance. The server
+still owns jump eligibility, 0.8-second duration and the two-second cooldown.
+Restart the local operator to load changed driving instructions for new sessions.
+
 References: [Decisions API](https://developers.openai.com/api/docs/guides/decisions), [Agents API functions](https://developers.openai.com/api/docs/guides/agents-api/tools/functions).
 
 ### Text-observation experiment

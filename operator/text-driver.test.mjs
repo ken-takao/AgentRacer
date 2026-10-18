@@ -80,6 +80,68 @@ test('rejects same settings initially or after revalidation without issuing a cl
   }
 });
 
+test('a valid JUMP decision is executed once after fresh revalidation', async () => {
+  const f = fixture({ decide: async ({ observation }) => {
+    assert.equal(observation.phase, 'racing');
+    assert.equal(observation.driver.jumpAvailable, true);
+    return { action: 'jump', instruction: 'Click JUMP once in 04 / AIR JUMP.' };
+  } });
+  assert.deepEqual(await runTextDriver(f.api), { reason: 'terminal', iterations: 1, executed: 1 });
+  assert.equal(f.executions.length, 1);
+  const command = f.executions[0];
+  assert.deepEqual(command.input, { type: 'jump' });
+  assert.equal(command.decision.instruction, 'Click JUMP once in 04 / AIR JUMP.');
+  assert.equal(command.observation.observedAt, 10010, 'the executor receives the revalidated observation');
+  assert.equal(command.observation.driver.jumpAvailable, true);
+  assert.equal(f.trace.length, 1);
+  assert.equal(f.trace[0].skipReason, undefined);
+  assert.equal(f.trace[0].executeMs, 25, 'execution completes through the existing successful executor mock');
+  assert.deepEqual(f.sleeps, []);
+});
+
+test('JUMP is discarded when availability changes after the decision', async t => {
+  for (const [name, effects] of Object.entries({
+    unavailable: { jumpAvailable: false },
+    cooldown: { jumpReadyAt: 11000 },
+    airborne: { jumpEndsAt: 11000 },
+    spinning: { spinEndsAt: 11000 },
+  })) await t.test(name, async () => {
+    let reads = 0;
+    const f = fixture({ readState: async () => {
+      const s = state(++reads > 2 ? 'finished' : 'racing');
+      if (reads === 2) Object.assign(s.players.red, effects);
+      return { state: s, observedAt: 10000 };
+    }, decide: async ({ observation }) => {
+      assert.equal(observation.driver.jumpAvailable, true);
+      assert.equal(observation.driver.jumpRemainingMs, 0);
+      assert.equal(observation.driver.jumpCooldownRemainingMs, 0);
+      assert.equal(observation.driver.spinRemainingMs, 0);
+      return { action: 'jump' };
+    } });
+    assert.deepEqual(await runTextDriver(f.api), { reason: 'terminal', iterations: 1, executed: 0 });
+    assert.equal(reads, 3, 'the decision was revalidated before skipping it');
+    assert.equal(f.executions.length, 0);
+    assert.equal(f.trace[0].skipReason, 'jump_unavailable');
+    assert.deepEqual(f.sleeps, [750]);
+  });
+});
+
+test('JUMP is not sent when revalidation leaves the racing phase', async t => {
+  for (const phase of ['countdown', 'finished']) await t.test(phase, async () => {
+    let reads = 0;
+    const f = fixture({ readState: async () => ({
+      state: state(++reads === 1 ? 'racing' : reads === 2 ? phase : 'finished'), observedAt: 10000,
+    }), decide: async ({ observation }) => {
+      assert.equal(observation.phase, 'racing');
+      return { action: 'jump' };
+    } });
+    assert.deepEqual(await runTextDriver(f.api), { reason: 'terminal', iterations: 1, executed: 0 });
+    assert.equal(f.executions.length, 0);
+    assert.equal(f.trace[0].skipReason, phase === 'finished' ? 'race_finished' : 'jump_unavailable');
+    assert.deepEqual(f.sleeps, phase === 'finished' ? [] : [750]);
+  });
+});
+
 test('skips expired decisions including time spent publishing and revalidating', async () => {
   for (const delayedStage of ['decision', 'onDecision', 'revalidation']) {
     let reads = 0;
