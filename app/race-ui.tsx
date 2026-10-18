@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Component, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import "./spectator-stage.css";
 import { RacePreparation } from "./race-preparation";
 import { RaceAudio } from "./race-audio";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleDot, Flag, Gauge, Maximize2, Monitor, Radio, Trophy, Zap } from "lucide-react";
-import { RoadsterCars } from "./roadster-cars";
+const RaceCircuit3D = lazy(() => import("./race-circuit-3d").then(module => ({ default: module.RaceCircuit3D })));
 
 type PlayerId = "red" | "blue";
 type Speed = "slow" | "normal" | "turbo";
@@ -96,22 +98,16 @@ function trackPoint(progress: number, lane: number, length: number) {
   const a = Math.PI / 2 + (d - straight * 2 - Math.PI * radius) / radius;
   return { x: 220 + Math.cos(a) * radius, y: 244 + Math.sin(a) * radius, angle: a * 180 / Math.PI + 180 };
 }
-function Circuit({ race, decorative = false, previewProgress }: { race?: Race | null; decorative?: boolean; previewProgress?: number }) {
-  const [modelsReady, setModelsReady] = useState(false);
+function Circuit({ race, decorative = false }: { race?: Race | null; decorative?: boolean }) {
   const length = race?.course.length || 200;
   const positions = (["red", "blue"] as PlayerId[]).map((id, i) => {
     const driver = race?.players[id];
-    return trackPoint(driver?.progress ?? (previewProgress === undefined ? (decorative ? 34 + i * 74 : 1) : previewProgress + i * 18), driver?.lane ?? i * 2, length);
+    return trackPoint(driver?.progress ?? (decorative ? 34 + i * 74 : 1), driver?.lane ?? i * 2, length);
   });
   const closeTogether = Math.hypot(positions[0].x - positions[1].x, positions[0].y - positions[1].y) < 36;
   const labelCenterX = (positions[0].x + positions[1].x) / 2;
   const labelY = Math.min(positions[0].y, positions[1].y) - 63;
-  const modelPositions = positions.map((p, i) => {
-    const offset = closeTogether ? (i === 0 ? -22 : 22) : 0;
-    const radians = p.angle * Math.PI / 180;
-    return { x: p.x + Math.cos(radians) * offset, y: p.y + Math.sin(radians) * offset, angle: p.angle };
-  });
-  return <div className={`circuit-stage ${modelsReady ? "models-ready" : ""}`}><svg className={`circuit ${decorative ? "decorative-circuit" : ""}`} viewBox="0 0 860 475" role="img" aria-label="リアルタイムの3レーンレースコース。赤と青の車の位置を表示">
+  return <svg className={`circuit ${decorative ? "decorative-circuit" : ""}`} viewBox="0 0 860 475" role="img" aria-label="リアルタイムの3レーンレースコース。赤と青の車の位置を表示">
     <defs><pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" stroke="#ffffff" strokeOpacity=".035" /></pattern><pattern id="checker" width="12" height="12" patternUnits="userSpaceOnUse"><rect width="12" height="12" fill="#e7e5d8" /><path d="M0 0H6V6H0ZM6 6H12V12H6Z" fill="#151c21" /></pattern><filter id="carShadow"><feDropShadow dx="0" dy="4" stdDeviation="5" floodOpacity=".55" /></filter></defs>
     <rect width="860" height="475" fill="url(#grid)" />
     <path d="M220 136H640A108 108 0 0 1 640 352H220A108 108 0 0 1 220 136" fill="none" stroke="#080e13" strokeWidth="109" />
@@ -134,7 +130,7 @@ function Circuit({ race, decorative = false, previewProgress }: { race?: Race | 
         {closeTogether && <g><line x1={p.x} y1={p.y} x2={p.x + dx} y2={p.y + dy} stroke={COLORS[id]} strokeWidth="1" strokeDasharray="2 2" opacity=".8" /><circle cx={p.x} cy={p.y} r="3" fill={COLORS[id]} stroke="#11191f" strokeWidth="1" /></g>}
         <g transform={`translate(${p.x + dx} ${p.y + dy})`}>
           <circle r="31" fill={COLORS[id]} opacity=".08" />
-          <g className="circuit-svg-car" transform={`rotate(${p.angle})`} filter="url(#carShadow)"><Car color={id} /></g>
+          <g transform={`rotate(${p.angle})`} filter="url(#carShadow)"><Car color={id} /></g>
           {closeTogether && <line x1="0" y1="-28" x2={badgeX} y2={badgeY + 9} stroke={COLORS[id]} strokeWidth="1" opacity=".45" />}
           <g transform={`translate(${badgeX} ${badgeY})`}><rect x="-29" y="-11" width="58" height="20" rx="5" fill="#11191f" stroke={COLORS[id]} strokeOpacity=".55" /><text textAnchor="middle" y="3" fontSize="10" fontWeight="700" fill={COLORS[id]}>{id.toUpperCase()}</text></g>
         </g>
@@ -142,7 +138,24 @@ function Circuit({ race, decorative = false, previewProgress }: { race?: Race | 
     })}
     {closeTogether && <text x="430" y="420" textAnchor="middle" fill="#8a999e" fontSize="10">接近時は車体を横にずらして表示 · 点が実際の位置</text>}
     <text x="28" y="444" fill="#647077" fontSize="10" letterSpacing="2">TOKYO CIRCUIT</text><text x="832" y="444" textAnchor="end" fill="#647077" fontSize="10" letterSpacing="2">3 LANES · 200 UNITS</text>
-  </svg><RoadsterCars positions={modelPositions} onReady={setModelsReady} /></div>;
+  </svg>;
+}
+
+class SceneBoundary extends Component<{ children: ReactNode; fallback: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
+}
+function SpectatorCircuit({ race, decorative = false }: { race: Race & { now?: number }; decorative?: boolean }) {
+  const [unavailable, setUnavailable] = useState(false);
+  const fail = useCallback(() => setUnavailable(true), []);
+  const fallback = <div className="scene-fallback"><p role="status">3D表示を利用できないため、2Dでレースを表示しています。</p><Circuit race={race} decorative={decorative} /></div>;
+  if (unavailable) return fallback;
+  return <SceneBoundary fallback={fallback}><Suspense fallback={<div className="scene-loading" role="status"><span />3Dサーキットを準備しています</div>}><RaceCircuit3D race={race} decorative={decorative} onUnavailable={fail} /></Suspense></SceneBoundary>;
+}
+function previewRace(progress: number): Race & { now: number } {
+  const driver = (id: PlayerId, offset: number, lane: number): Driver => ({ id, name: NAMES[id], joined: true, ready: true, progress: (progress + offset) % 200, lane, targetLane: lane as 0 | 1 | 2, speedMode: "normal", speed: 1.8, collisionCount: 0, slowedUntil: 0, upcomingObstacles: [] });
+  return { phase: "racing", updatedAt: 0, createdAt: 0, countdownEndsAt: null, startedAt: 0, finishedAt: null, winner: null, remainingMs: 180000, now: progress * 1000, players: { red: driver("red", 0, 0), blue: driver("blue", 18, 2) }, course: { length: 200, obstacles: [25,50,75,100,125,150,175].map((p,i) => ({ id: `preview-${i}`, progress: p, blockedLane: (i % 3) as 0 | 1 | 2 })) } };
 }
 
 export function HomeScreen() {
@@ -169,7 +182,7 @@ export function HomeScreen() {
     void pollLatest();
     return () => { disposed = true; ac.abort(); clearTimeout(timer); };
   }, []);
-  return <><SiteHeader /><main className="home-main"><section className="home-hero"><div className="eyebrow"><span className="tiny-line" />THE COMPUTER USE RACING EXPERIMENT</div><h1>Two agents.<br /><span>One finish line.</span></h1><p className="home-description">画面を見る。ハンドルを切る。勝利を狙う。<br />2つのAIエージェントが、リアルタイムで競うレース。</p><div className="hero-actions">{latest ? <a className="button button-lime" href={`/race/${enc(latest)}`}><Radio size={18} />レースを観戦する<ArrowUpRight size={19} /></a> : <span className="button button-muted">{!checked ? "レースを確認中…" : latestError ? "レース情報を取得できません" : "開催中のレースはありません"}</span>}<a className="button button-lime" href="/preview/roadster">Roadsterを確認<ArrowUpRight size={17} /></a><a className="subtle-link" href="http://127.0.0.1:4180/">オペレーター画面<ArrowUpRight size={15} /></a></div><div className="hero-facts"><span><b>02</b> INDEPENDENT AGENTS</span><span><b>03</b> LANES</span><span><b>∞</b> POSSIBILITIES</span></div></section><section className="home-track"><div className="track-topline"><span><CircleDot size={13} />TOKYO CIRCUIT</span><span>REAL-TIME SIMULATION</span></div><Circuit decorative /><div className="home-versus"><span className="red-text">01 / SCARLET</span><span>VS</span><span className="blue-text">02 / COBALT</span></div></section><section className="how-it-works"><div><span className="step">01 / SEE</span><h2>それぞれの視点で</h2><p>独立したクラウドブラウザーで、コースと障害物を観察。</p></div><div><span className="step">02 / DECIDE</span><h2>操作を決める</h2><p>Computer Useがレーンと速度のボタンをクリック。</p></div><div><span className="step">03 / RACE</span><h2>時間は止まらない</h2><p>判断している間もレースは進行。先にゴールしたAIの勝利。</p></div></section><p className="operator-note">対戦の開始は、主催者のローカルオペレーター画面から。観戦はこのサイトで楽しめます。</p></main><Footer /></>;
+  return <><SiteHeader /><main className="home-main"><section className="home-hero"><div className="eyebrow"><span className="tiny-line" />THE COMPUTER USE RACING EXPERIMENT</div><h1>Two agents.<br /><span>One finish line.</span></h1><p className="home-description">画面を見る。ハンドルを切る。勝利を狙う。<br />2つのAIエージェントが、リアルタイムで競うレース。</p><div className="hero-actions">{latest ? <a className="button button-lime" href={`/race/${enc(latest)}`}><Radio size={18} />レースを観戦する<ArrowUpRight size={19} /></a> : <span className="button button-muted">{!checked ? "レースを確認中…" : latestError ? "レース情報を取得できません" : "開催中のレースはありません"}</span>}<a className="button button-lime" href="/preview/roadster">3Dプレビュー<ArrowUpRight size={17} /></a><a className="subtle-link" href="http://127.0.0.1:4180/">オペレーター画面<ArrowUpRight size={15} /></a></div><div className="hero-facts"><span><b>02</b> INDEPENDENT AGENTS</span><span><b>03</b> LANES</span><span><b>∞</b> POSSIBILITIES</span></div></section><section className="home-track"><div className="track-topline"><span><CircleDot size={13} />TOKYO CIRCUIT</span><span>REAL-TIME SIMULATION</span></div><SpectatorCircuit race={previewRace(30)} decorative /><div className="home-versus"><span className="red-text">01 / SCARLET</span><span>VS</span><span className="blue-text">02 / COBALT</span></div></section><section className="how-it-works"><div><span className="step">01 / SEE</span><h2>それぞれの視点で</h2><p>独立したクラウドブラウザーで、コースと障害物を観察。</p></div><div><span className="step">02 / DECIDE</span><h2>操作を決める</h2><p>Computer Useがレーンと速度のボタンをクリック。</p></div><div><span className="step">03 / RACE</span><h2>時間は止まらない</h2><p>判断している間もレースは進行。先にゴールしたAIの勝利。</p></div></section><p className="operator-note">対戦の開始は、主催者のローカルオペレーター画面から。観戦はこのサイトで楽しめます。</p></main><Footer /></>;
 }
 export function RoadsterPreviewScreen() {
   const [progress, setProgress] = useState(0);
@@ -183,7 +196,7 @@ export function RoadsterPreviewScreen() {
     frame = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(frame);
   }, []);
-  return <><SiteHeader /><main className="spectator-main"><div className="race-heading"><div><div className="eyebrow">TESLA ROADSTER / MODEL PREVIEW</div><h1>Roadster <em>preview.</em></h1><p>赤と青のGLBモデルをコース上で確認できます。レースのAPIやデータベースは使用しません。</p></div><a className="subtle-link" href="/">ホームに戻る<ArrowUpRight size={15} /></a></div><section className="track-panel"><div className="track-topline"><span><CircleDot size={13} />MODEL PREVIEW</span><span>RED · BLUE</span></div><Circuit previewProgress={progress} /></section></main><Footer /></>;
+  return <><SiteHeader /><main className="spectator-main"><div className="race-heading"><div><div className="eyebrow">TESLA ROADSTER / MODEL PREVIEW</div><h1>Roadster <em>preview.</em></h1><p>3Dサーキットのデモ走行です。実際のAI対戦とは別のプレビューです。</p></div><a className="subtle-link" href="/">ホームに戻る<ArrowUpRight size={15} /></a></div><section className="track-panel"><div className="track-topline"><span><CircleDot size={13} />MODEL PREVIEW</span><span>RED · BLUE</span></div><SpectatorCircuit race={previewRace(progress)} /></section></main><Footer /></>;
 }
 function Footer() { return <footer className="site-footer"><span>AGENT GRAND PRIX</span><span>BUILT WITH OPENAI AGENTS API + COMPUTER USE</span><span>DEMO / 2026</span></footer>; }
 function Progress({ race }: { race: Race }) {
@@ -232,7 +245,7 @@ export function SpectatorScreen({ id }: { id: string }) {
   const race = useProjectedRace(data?.state, receivedAt);
   const elapsed = race ? Math.max(0, ((race.finishedAt || race.now) - (race.startedAt || race.createdAt)) / 1000) : 0;
   const countdown = race?.countdownEndsAt ? Math.max(0, Math.ceil((race.countdownEndsAt - race.now) / 1000)) : 0;
-  return <><SiteHeader live={race?.phase === "racing"} /><main className="spectator-main">{!race ? <LoadingRace error={error} /> : <><div className="race-heading"><div><div className="eyebrow">LIVE EXPERIMENT / TOKYO CIRCUIT</div><h1>{race.phase === "finished" || race.phase === "cancelled" ? <>Ready to <em>race again?</em></> : race.phase === "lobby" ? <>Preparing the <em>grid.</em></> : <>The race is <em>on.</em></>}</h1><p>2つのAI。2つのブラウザー。勝者はひとり。</p></div><div className="race-clock"><span>{race.phase === "lobby" ? "PREPARATION TIME" : race.phase === "countdown" ? "START IN" : "RACE TIME"}</span><strong>{race.phase === "countdown" ? countdown : <>{Math.floor(elapsed / 60).toString().padStart(2, "0")}<i>:</i>{Math.floor(elapsed % 60).toString().padStart(2, "0")}<small>.{Math.floor(elapsed % 1 * 10)}</small></>}</strong></div></div>{error && <div className="connection-banner" role="status">接続を回復しています · 最後に受信したレース状態を表示中</div>}{(race.phase === "finished" || race.phase === "cancelled") && <NextRacePanel id={id} />}<RaceAudio raceId={id} phase={race.phase} /><div className="race-dashboard"><section className="track-panel"><div className="track-topline"><span><i className={`status-dot ${race.phase === "racing" ? "active" : ""}`} />{PHASE_LABELS[race.phase]}</span><span>200 UNITS · 3 LANES</span></div><Circuit race={race} />{race.phase === "countdown" && <div className="countdown-overlay"><span>GET READY</span><strong>{countdown || "GO"}</strong></div>}{race.phase === "lobby" && <RacePreparation createdAt={race.createdAt} serverNow={data!.state.updatedAt} receivedAt={receivedAt} players={race.players} />}{(race.phase === "finished" || race.phase === "cancelled") && <RaceOutcome race={race} />}<Progress race={race} /></section><aside className="race-sidebar"><div className="sidebar-label">THE DRIVERS <span>02</span></div><DriverCard id="red" driver={race.players.red} telemetry={data?.telemetry.red} phase={race.phase} /><div className="versus-divider"><span />VS<span /></div><DriverCard id="blue" driver={race.players.blue} telemetry={data?.telemetry.blue} phase={race.phase} /><div className="race-rules"><span><Zap size={15} />THINK FAST. DRIVE SMART.</span><p>AIの思考中も車は進み続けます。障害物をかわし、速度を選んでゴールへ。</p><div><i className="obstacle-key" />障害物に接触すると一時減速</div></div></aside></div><div className="section-heading"><div><span className="eyebrow">BEHIND THE WHEEL</span><h2>AIが見ている、本当の画面。</h2></div><span><Monitor size={14} />COMPUTER USE CAPTURES</span></div><div className="camera-grid"><CameraPanel raceId={id} id="red" telemetry={data?.telemetry.red} /><CameraPanel raceId={id} id="blue" telemetry={data?.telemetry.blue} /></div><div className="spectator-note"><CircleDot size={14} /><span>上のコースはリアルタイムのゲーム状態。下の映像は各エージェントが取得したスクリーンショットです。</span></div></>}</main><Footer /></>;
+  return <><SiteHeader live={race?.phase === "racing"} /><main className="spectator-main">{!race ? <LoadingRace error={error} /> : <><div className="race-heading"><div><div className="eyebrow">LIVE EXPERIMENT / TOKYO CIRCUIT</div><h1>{race.phase === "finished" || race.phase === "cancelled" ? <>Ready to <em>race again?</em></> : race.phase === "lobby" ? <>Preparing the <em>grid.</em></> : <>The race is <em>on.</em></>}</h1><p>2つのAI。2つのブラウザー。勝者はひとり。</p></div><div className="race-clock"><span>{race.phase === "lobby" ? "PREPARATION TIME" : race.phase === "countdown" ? "START IN" : "RACE TIME"}</span><strong>{race.phase === "countdown" ? countdown : <>{Math.floor(elapsed / 60).toString().padStart(2, "0")}<i>:</i>{Math.floor(elapsed % 60).toString().padStart(2, "0")}<small>.{Math.floor(elapsed % 1 * 10)}</small></>}</strong></div></div>{error && <div className="connection-banner" role="status">接続を回復しています · 最後に受信したレース状態を表示中</div>}{(race.phase === "finished" || race.phase === "cancelled") && <NextRacePanel id={id} />}<RaceAudio raceId={id} phase={race.phase} /><div className="race-dashboard"><section className="track-panel spectator-track"><div className="track-topline"><span><i className={`status-dot ${race.phase === "racing" ? "active" : ""}`} />{PHASE_LABELS[race.phase]}</span><span>3D LIVE · 200 UNITS · 3 LANES</span></div><div className="spectator-stage"><SpectatorCircuit race={race} />{race.phase === "countdown" && <div className="countdown-overlay"><span>GET READY</span><strong>{countdown || "GO"}</strong></div>}{race.phase === "lobby" && <RacePreparation createdAt={race.createdAt} serverNow={data!.state.updatedAt} receivedAt={receivedAt} players={race.players} />}{(race.phase === "finished" || race.phase === "cancelled") && <RaceOutcome race={race} />}</div><Progress race={race} /></section><aside className="race-sidebar"><div className="sidebar-label">THE DRIVERS <span>02</span></div><DriverCard id="red" driver={race.players.red} telemetry={data?.telemetry.red} phase={race.phase} /><div className="versus-divider"><span />VS<span /></div><DriverCard id="blue" driver={race.players.blue} telemetry={data?.telemetry.blue} phase={race.phase} /><div className="race-rules"><span><Zap size={15} />THINK FAST. DRIVE SMART.</span><p>AIの思考中も車は進み続けます。障害物をかわし、速度を選んでゴールへ。</p><div><i className="obstacle-key" />障害物に接触すると一時減速</div></div></aside></div><div className="section-heading"><div><span className="eyebrow">BEHIND THE WHEEL</span><h2>AIが見ている、本当の画面。</h2></div><span><Monitor size={14} />COMPUTER USE CAPTURES</span></div><div className="camera-grid"><CameraPanel raceId={id} id="red" telemetry={data?.telemetry.red} /><CameraPanel raceId={id} id="blue" telemetry={data?.telemetry.blue} /></div><div className="spectator-note"><CircleDot size={14} /><span>上の3Dコースと下の2D操作画面は、同じレースの位置・車線・速度を表示しています。下の映像は各エージェントが取得したスクリーンショットです。</span></div></>}</main><Footer /></>;
 }
 
 function RoadPreview({ race, player }: { race: Race; player: PlayerId }) {

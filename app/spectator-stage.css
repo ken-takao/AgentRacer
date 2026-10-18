@@ -1,0 +1,10 @@
+.spectator-stage { position: relative; isolation: isolate; }
+.spectator-stage > .race-preparation { top: 50%; z-index: 3; }
+.spectator-stage > .countdown-overlay { top: 48%; z-index: 3; }
+.spectator-stage > .race-outcome { position: absolute; z-index: 3; left: 50%; top: 58px; transform: translateX(-50%); width: max-content; max-width: 94%; border-radius: 8px; box-shadow: 0 10px 40px #0007; background: #10191fee; color: #d8ed94; }
+.scene-loading { min-height: 420px; display: flex; flex-direction: column; gap: 18px; justify-content: center; align-items: center; color: #b6cba9; font-size: 12px; background: #101c25; }
+.scene-loading > span { width: 24px; height: 24px; border: 2px solid #d8ed9430; border-top-color: #d8ed94; border-radius: 50%; animation: preparation-spin 1.5s linear infinite; }
+.scene-fallback p { font-size: 11px; text-align: center; padding: 12px; margin: 0; background: #23312a; color: #d8ed94; }
+.home-track .scene-loading { min-height: 310px; }
+@media(max-width:540px) { .scene-loading { min-height: 360px; } .spectator-stage > .race-outcome { top: 49px; padding: 12px; gap: 10px; } }
+@media(prefers-reduced-motion:reduce) { .scene-loading > span { animation: none; } }
