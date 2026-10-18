@@ -1,9 +1,27 @@
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import WebSocket from 'ws';
 import { createNarrationDirector, NARRATOR_INSTRUCTIONS } from './narration-director.mjs';
 
 export const LIVE_SAMPLE_RATE = 24000;
 const BYTES_PER_MS = LIVE_SAMPLE_RATE * 2 / 1000;
+
+/** Plan silence against elapsed time, not the number of timer callbacks. */
+export function planSilentInput(elapsedMs, sentFrames) {
+  if (!Number.isFinite(elapsedMs) || !Number.isSafeInteger(sentFrames) || sentFrames < 0) throw new RangeError('invalid_audio_clock');
+  const targetFrames = Math.floor(Math.max(0, elapsedMs) * LIVE_SAMPLE_RATE / 1000);
+  const owedFrames = Math.max(0, targetFrames - sentFrames);
+  // A suspended process must not fast-forward a long, stale session on resume.
+  if (owedFrames > LIVE_SAMPLE_RATE * 10) throw new RangeError('audio_input_clock_lag');
+  // At most one second of catch-up per tick, in packets no larger than 500 ms.
+  let remaining = Math.min(owedFrames, LIVE_SAMPLE_RATE);
+  const packets = [];
+  while (remaining) {
+    const frames = Math.min(remaining, LIVE_SAMPLE_RATE / 2);
+    packets.push(frames); remaining -= frames;
+  }
+  return packets;
+}
 
 export function pcmToWav(pcm) {
   const header = Buffer.alloc(44);
@@ -22,7 +40,7 @@ function bounded(promise, ms, label) {
 /** One GPT-Live session per race. All keys stay inside this operator process. */
 export function createLiveNarrator({
   key, raceId, publishAudio, publishFeed, log = () => {}, voice = 'marin',
-  WebSocketImpl = WebSocket, now = Date.now, startTimeoutMs = 20000,
+  WebSocketImpl = WebSocket, now = Date.now, monotonicClock = () => performance.now(), startTimeoutMs = 20000,
   closeTimeoutMs = 10000, finishGraceMs = 6500, maxDurationMs = 300000,
   uploadTimeoutMs = 6000, chunkMs = 1000, tailMs = 60000,
 } = {}) {
@@ -40,6 +58,7 @@ export function createLiveNarrator({
   let finalizationPromise = null, uploadsSealed = false, terminalPublishing = false, finalFeedPublished = null;
   let firstAudioAt = null, firstTranscriptAt = null, lastOutputAt = null, lastContextAt = 0;
   let receivedBytes = 0, droppedChunks = 0, sentFacts = 0, transcriptFragments = 0;
+  let inputFrames = 0, inputClockStartedAt = null;
   let errorCode = null, usage = null, observeState = null;
   const closedPromise = new Promise(resolve => { resolveClosed = resolve; });
   const safeLog = text => { try { log(text); } catch {} };
@@ -248,11 +267,20 @@ export function createLiveNarrator({
         if (event.type === 'session.started' && !didStart) {
           didStart = true; clearTimeout(startTimer); feed.status = 'live'; feed.startedAt = now(); publish();
           safeLog('GPT-Live 実況セッションが開始しました。');
-          // A real-time input clock is required even without an audience microphone.
-          const silence = Buffer.alloc(2400 * 2).toString('base64');
+          // A delayed callback must catch up the input timeline rather than lose
+          // its missed 100 ms intervals forever. The wall clock can jump; use a
+          // monotonic clock, complete PCM frames, and bounded catch-up packets.
+          inputClockStartedAt = monotonicClock();
           inputTimer = setInterval(() => {
-            if (socket.bufferedAmount > 48000 * 3) { fail('audio_input_backpressure'); return; }
-            send({ type: 'session.input_audio.append', audio: silence });
+            if (closing || closed) return;
+            let packets;
+            try { packets = planSilentInput(monotonicClock() - inputClockStartedAt, inputFrames); }
+            catch { fail('audio_input_clock_lag'); return; }
+            for (const frames of packets) {
+              if (socket.bufferedAmount > 48000 * 3) { fail('audio_input_backpressure'); return; }
+              if (!send({ type: 'session.input_audio.append', audio: Buffer.alloc(frames * 2).toString('base64') })) return;
+              inputFrames += frames;
+            }
           }, 100);
           inputTimer.unref?.();
           tickTimer = setInterval(tick, 200); tickTimer.unref?.();
@@ -301,7 +329,8 @@ export function createLiveNarrator({
     return { generationId, revision: feed.revision, status: feed.status, voice, startedAt: feed.startedAt, finalized, finalFeedPublished, error: errorCode,
       firstAudioMs: firstAudioAt === null ? null : firstAudioAt - feed.startedAt,
       firstTranscriptMs: firstTranscriptAt === null ? null : firstTranscriptAt - feed.startedAt,
-      audioMs: Math.round(receivedBytes / BYTES_PER_MS), transcriptFragments, sentFacts, chunks: seq, droppedChunks, usage };
+      audioMs: Math.round(receivedBytes / BYTES_PER_MS), inputAudioMs: Math.round(inputFrames * 1000 / LIVE_SAMPLE_RATE),
+      transcriptFragments, sentFacts, chunks: seq, droppedChunks, usage };
   }
   return { start, observe, finish, status };
 }

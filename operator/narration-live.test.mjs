@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { createLiveNarrator, pcmToWav } from './live-narrator.mjs';
+import { createLiveNarrator, pcmToWav, planSilentInput } from './live-narrator.mjs';
 
 class FakeSocket extends EventEmitter {
   static sockets = [];
@@ -33,6 +33,35 @@ test('PCM uses a valid mono 24kHz WAV container', () => {
   const wav = pcmToWav(Buffer.alloc(48000));
   assert.equal(wav.toString('ascii', 0, 4), 'RIFF'); assert.equal(wav.readUInt32LE(24), 24000);
   assert.equal(wav.readUInt16LE(22), 1); assert.equal(wav.readUInt32LE(40), 48000); assert.equal(wav.length, 48044);
+});
+
+test('delayed silence timers maintain elapsed audio time without running ahead', () => {
+  let sentFrames = 0;
+  // Mimic a nominal 100 ms timer running at 110 ms under load for 75 seconds.
+  for (let elapsed = 110; elapsed < 75000; elapsed += 110) {
+    const packets = planSilentInput(elapsed, sentFrames);
+    sentFrames += packets.reduce((sum, frames) => sum + frames, 0);
+    assert.ok(sentFrames <= Math.floor(elapsed * 24));
+  }
+  sentFrames += planSilentInput(75000, sentFrames).reduce((sum, frames) => sum + frames, 0);
+  assert.equal(sentFrames / 24000, 75);
+  assert.deepEqual(planSilentInput(75000, sentFrames), []);
+});
+
+test('silence catches up a blocked timer with bounded 500 ms packets and rejects stale sessions', () => {
+  let frames = 2400;
+  const delayed = planSilentInput(2700, frames);
+  assert.deepEqual(delayed, [12000, 12000]);
+  frames += delayed.reduce((sum, n) => sum + n, 0);
+  for (const elapsed of [2800, 2900, 3000]) {
+    const packets = planSilentInput(elapsed, frames);
+    assert.ok(packets.every(n => n > 0 && n <= 12000));
+    assert.ok(packets.reduce((sum, n) => sum + n, 0) <= 24000);
+    frames += packets.reduce((sum, n) => sum + n, 0);
+    assert.ok(frames <= elapsed * 24);
+  }
+  assert.equal(frames / 24, 3000);
+  assert.throws(() => planSilentInput(20000, frames), /audio_input_clock_lag/);
 });
 
 test('session sends facts, receives real captions and shares bounded WAV chunks without keys in public feed', async () => {
