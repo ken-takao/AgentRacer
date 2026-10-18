@@ -21,12 +21,14 @@ type Playback = {
   pending: boolean;
   enabled: boolean;
   mediaStarted: boolean;
+  buffering: boolean;
   disposed: boolean;
   revision: number;
 };
 const PLAYBACK_DELAY_MS = 3000;
 const CAPTION_HOLD_MS = 1200;
 const BUFFER_AHEAD_MS = 5000;
+const REBUFFER_RESERVE_MS = 1500;
 
 function isFeed(value: unknown, raceId: string): value is NarrationFeed {
   if (!value || typeof value !== "object") return false;
@@ -40,6 +42,9 @@ function isFeed(value: unknown, raceId: string): value is NarrationFeed {
     && feed.captions.every(caption => typeof caption.id === "string" && typeof caption.text === "string"
       && Number.isFinite(caption.startMs) && Number.isFinite(caption.endMs));
 }
+function publishedAudioEdge(feed: NarrationFeed) {
+  return Math.max(0, ...feed.chunks.map(chunk => chunk.startMs + chunk.durationMs));
+}
 function mediaEdge(feed: NarrationFeed) {
   return Math.max(0, ...feed.chunks.map(chunk => chunk.startMs + chunk.durationMs), ...feed.captions.map(caption => caption.endMs));
 }
@@ -47,7 +52,7 @@ function liveCursor(feed: NarrationFeed) {
   // Reserve three seconds of published audio. Model output, chunk assembly and
   // storage publication already consumed time before a chunk reaches this feed;
   // a wall-clock or transcript edge would incorrectly spend that reserve twice.
-  const audioEdge = Math.max(0, ...feed.chunks.map(chunk => chunk.startMs + chunk.durationMs));
+  const audioEdge = publishedAudioEdge(feed);
   const edge = feed.status === "ended" || feed.status === "error" ? mediaEdge(feed) : audioEdge;
   // Keep a negative cursor at session startup so the first words get the same
   // buffering time as later audio instead of being clipped while downloading.
@@ -55,6 +60,7 @@ function liveCursor(feed: NarrationFeed) {
 }
 function cursorNow(playback: Playback) {
   if (!playback.mediaStarted) return -PLAYBACK_DELAY_MS;
+  if (playback.buffering) return playback.clock?.cursor ?? 0;
   return playback.clock ? playback.clock.cursor + performance.now() - playback.clock.at : 0;
 }
 function stopSources(playback: Playback) {
@@ -91,7 +97,7 @@ function terminalReplayStart(feed: NarrationFeed) {
   return Math.max(earliest, latest ? latest.startMs - 150 : mediaEdge(feed) - 4000);
 }
 function emptyPlayback(): Playback {
-  return { feed: null, clock: null, context: null, gain: null, sources: new Map(), scheduled: new Set(), buffers: new Map(), pending: false, enabled: false, mediaStarted: false, disposed: false, revision: 0 };
+  return { feed: null, clock: null, context: null, gain: null, sources: new Map(), scheduled: new Set(), buffers: new Map(), pending: false, enabled: false, mediaStarted: false, buffering: false, disposed: false, revision: 0 };
 }
 
 /** A single race-wide audio feed; this component never opens an AI session. */
@@ -122,7 +128,23 @@ function RaceNarrationSession({ raceId, onSpeakingChange }: { raceId: string; on
 
     function resetClock(feed: NarrationFeed) {
       stopSources(playback);
+      playback.buffering = false;
       playback.clock = { cursor: liveCursor(feed), at: performance.now() };
+    }
+    function resumeBufferedPlayback() {
+      const { feed, clock } = playback;
+      if (!playback.buffering || !feed || !clock) return;
+      const terminal = feed.status === "ended" || feed.status === "error";
+      const available = publishedAudioEdge(feed) - clock.cursor;
+      if (!terminal && available < REBUFFER_RESERVE_MS) return;
+      if (playback.enabled && available > 0) {
+        // Publication alone is insufficient: the first resumed sample must
+        // already be decoded, otherwise its beginning would be clipped again.
+        const first = feed.chunks.find(chunk => chunk.startMs <= clock.cursor + 1 && chunk.startMs + chunk.durationMs > clock.cursor);
+        if (!first || !playback.buffers.has(first.seq)) return;
+      }
+      playback.buffering = false;
+      playback.clock = { cursor: clock.cursor, at: performance.now() };
     }
     async function poll() {
       let delay = 700;
@@ -186,6 +208,8 @@ function RaceNarrationSession({ raceId, onSpeakingChange }: { raceId: string; on
           if (!playback.disposed && playback.revision === revision) playback.buffers.set(chunk.seq, buffer);
         }));
         if (playback.disposed || playback.revision !== revision || !playback.enabled || context.state !== "running") return;
+        resumeBufferedPlayback();
+        if (playback.buffering) return;
         for (const chunk of chunks) {
           if (playback.scheduled.has(chunk.seq)) continue;
           const buffer = playback.buffers.get(chunk.seq);
@@ -215,7 +239,17 @@ function RaceNarrationSession({ raceId, onSpeakingChange }: { raceId: string; on
         stopSources(playback);
         setAudioState("blocked");
       }
-      const cursor = cursorNow(playback);
+      if (playback.buffering && (!playback.enabled || (playback.feed && publishedAudioEdge(playback.feed) <= (playback.clock?.cursor ?? 0)))) resumeBufferedPlayback();
+      let cursor = cursorNow(playback);
+      if (!playback.buffering && playback.mediaStarted && playback.feed?.status === "live"
+        && cursor >= publishedAudioEdge(playback.feed)) {
+        // Stop at the last real PCM sample. Both subtitles and audio wait here;
+        // no extrapolated silence or repeated words are inserted during a stall.
+        cursor = publishedAudioEdge(playback.feed);
+        stopSources(playback);
+        playback.buffering = true;
+        playback.clock = { cursor, at: performance.now() };
+      }
       if (playback.enabled && playback.feed && (playback.feed.status === "ended" || playback.feed.status === "error")
         && cursor >= mediaEdge(playback.feed) + 100 && playback.sources.size === 0) {
         // Make the next click a replay, and never keep BGM ducked after completion.
@@ -291,6 +325,7 @@ function RaceNarrationSession({ raceId, onSpeakingChange }: { raceId: string; on
         const replayStart = terminalReplayStart(feed);
         if (replayStart === null) { setAudioState("unavailable"); return; }
         stopSources(playback);
+        playback.buffering = false;
         // Give retained chunks the same download buffer as a live connection.
         playback.clock = { cursor: replayStart, at: performance.now() + PLAYBACK_DELAY_MS };
       }

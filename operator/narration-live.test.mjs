@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { createLiveNarrator, pcmToWav, planSilentInput } from './live-narrator.mjs';
+import { createLiveNarrator, pcmToWav, planSilentInput, mapTranscriptToAudio } from './live-narrator.mjs';
 
 class FakeSocket extends EventEmitter {
   static sockets = [];
@@ -35,6 +35,11 @@ test('PCM uses a valid mono 24kHz WAV container', () => {
   assert.equal(wav.readUInt16LE(22), 1); assert.equal(wav.readUInt32LE(40), 48000); assert.equal(wav.length, 48044);
 });
 
+test('late session transcript maps into PCM instead of appearing after audio ends', () => {
+  assert.deepEqual(mapTranscriptToAudio(156000, 157000, 147840), { startMs: 146840, endMs: 147840 });
+  assert.deepEqual(mapTranscriptToAudio(0, 1200, 200), { startMs: 0, endMs: 200 });
+});
+
 test('delayed silence timers maintain elapsed audio time without running ahead', () => {
   let sentFrames = 0;
   // Mimic a nominal 100 ms timer running at 110 ms under load for 75 seconds.
@@ -46,6 +51,15 @@ test('delayed silence timers maintain elapsed audio time without running ahead',
   sentFrames += planSilentInput(75000, sentFrames).reduce((sum, frames) => sum + frames, 0);
   assert.equal(sentFrames / 24000, 75);
   assert.deepEqual(planSilentInput(75000, sentFrames), []);
+});
+
+test('silence appends align to complete 20 ms frames and carry fractional time forward', () => {
+  assert.deepEqual(planSilentInput(105, 0), [2400]);
+  assert.deepEqual(planSilentInput(110, 2400), []);
+  assert.deepEqual(planSilentInput(120, 2400), [480]);
+  for (const elapsed of [131, 287, 999, 1111]) {
+    assert.ok(planSilentInput(elapsed, 0).every(frames => frames % 480 === 0));
+  }
 });
 
 test('silence catches up a blocked timer with bounded 500 ms packets and rejects stale sessions', () => {
@@ -80,13 +94,35 @@ test('session sends facts, receives real captions and shares bounded WAV chunks 
   await pause(220);
   assert.equal(audio.length, 1); assert.equal(audio[0].durationMs, 1000);
   assert.equal(feeds.at(-1).captions[0].text, '行け、スカーレット！');
-  assert.equal(feeds.at(-1).captions[0].endMs, 1200);
+  // Transcript timestamps are native session time; our feed uses PCM time.
+  // Only 1000 ms of PCM arrived, so its captions cannot end at native 1200 ms.
+  assert.equal(feeds.at(-1).captions[0].startMs, 100);
+  assert.equal(feeds.at(-1).captions[0].endMs, 1000);
   assert.ok(socket.sent.some(event => event.type === 'session.input_audio.append'));
   assert.ok(!JSON.stringify(feeds).includes('fixture-key')); assert.ok(!JSON.stringify(logs).includes('fixture-key'));
   const summary = await narrator.finish();
   assert.equal(summary.finalized, true); assert.equal(summary.status, 'ended'); assert.equal(summary.transcriptFragments, 2);
   assert.equal(socket.sent.filter(event => event.type === 'session.close').length, 1);
   await narrator.finish(); assert.equal(socket.sent.filter(event => event.type === 'session.close').length, 1);
+});
+
+test('captions before first PCM are deferred and sentences group by native time', async () => {
+  const { narrator, feeds } = fixture();
+  await narrator.start(); const socket = FakeSocket.sockets.at(-1);
+  socket.receive({ type: 'session.output_transcript.delta', delta: 'スタート、', start_ms: 9000, end_ms: 9300 });
+  assert.equal(feeds.at(-1).captions.length, 0);
+  socket.receive({ type: 'session.output_audio.delta', delta: Buffer.alloc(48000).toString('base64') });
+  socket.receive({ type: 'session.output_transcript.delta', delta: 'スカーレット', start_ms: 9300, end_ms: 9600 });
+  // Same media edge, but a long native pause must create a separate bubble.
+  socket.receive({ type: 'session.output_transcript.delta', delta: 'コバルト、ゴール！', start_ms: 15000, end_ms: 15400 });
+  await narrator.finish({ cancelled: true });
+  const captions = feeds.at(-1).captions;
+  assert.equal(captions.length, 2);
+  assert.equal(captions[0].text, 'スタート、スカーレット');
+  assert.equal(captions[1].text, 'コバルト、ゴール！');
+  assert.equal(captions[1].startMs, 600);
+  assert.equal(captions[1].endMs, 1000);
+  assert.ok(captions.every(caption => caption.endMs <= 1000));
 });
 
 test('provider failure isolates narration, publishes safe error, and releases session', async () => {

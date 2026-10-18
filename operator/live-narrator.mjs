@@ -9,7 +9,9 @@ const BYTES_PER_MS = LIVE_SAMPLE_RATE * 2 / 1000;
 /** Plan silence against elapsed time, not the number of timer callbacks. */
 export function planSilentInput(elapsedMs, sentFrames) {
   if (!Number.isFinite(elapsedMs) || !Number.isSafeInteger(sentFrames) || sentFrames < 0) throw new RangeError('invalid_audio_clock');
-  const targetFrames = Math.floor(Math.max(0, elapsedMs) * LIVE_SAMPLE_RATE / 1000);
+  // Send complete 20 ms audio frames. The remainder stays in elapsed time and
+  // is carried into later callbacks instead of being dropped per append.
+  const targetFrames = Math.floor(Math.max(0, elapsedMs) / 20) * (LIVE_SAMPLE_RATE / 50);
   const owedFrames = Math.max(0, targetFrames - sentFrames);
   // A suspended process must not fast-forward a long, stale session on resume.
   if (owedFrames > LIVE_SAMPLE_RATE * 10) throw new RangeError('audio_input_clock_lag');
@@ -21,6 +23,11 @@ export function planSilentInput(elapsedMs, sentFrames) {
     packets.push(frames); remaining -= frames;
   }
   return packets;
+}
+
+/** Approximate a spoken fragment on our PCM playback clock, not session time. */
+export function mapTranscriptToAudio(nativeStartMs, nativeEndMs, mediaEndMs) {
+  return { startMs: Math.max(0, mediaEndMs - (nativeEndMs - nativeStartMs)), endMs: mediaEndMs };
 }
 
 export function pcmToWav(pcm) {
@@ -58,6 +65,8 @@ export function createLiveNarrator({
   let finalizationPromise = null, uploadsSealed = false, terminalPublishing = false, finalFeedPublished = null;
   let firstAudioAt = null, firstTranscriptAt = null, lastOutputAt = null, lastContextAt = 0;
   let receivedBytes = 0, droppedChunks = 0, sentFacts = 0, transcriptFragments = 0;
+  const nativeCaptionTimes = new Map();
+  let pendingCaptions = [], droppedCaptions = 0;
   let inputFrames = 0, inputClockStartedAt = null;
   let errorCode = null, usage = null, observeState = null;
   const closedPromise = new Promise(resolve => { resolveClosed = resolve; });
@@ -71,9 +80,11 @@ export function createLiveNarrator({
     try { socket.send(JSON.stringify(event)); return true; } catch { fail('transport_error'); return false; }
   };
   function trim() {
-    const end = Math.max(outputCursor, now() - feed.startedAt);
+    const end = receivedBytes / BYTES_PER_MS;
     feed.chunks = feed.chunks.filter(c => c.startMs + c.durationMs >= end - tailMs).slice(-100);
     feed.captions = feed.captions.filter(c => c.endMs >= end - tailMs).slice(-150);
+    const retained = new Set(feed.captions.map(c => c.id));
+    for (const id of nativeCaptionTimes.keys()) if (!retained.has(id)) nativeCaptionTimes.delete(id);
   }
   function publish({ terminal = false } = {}) {
     if (terminalPublishing && !terminal) return Promise.resolve(false);
@@ -153,8 +164,8 @@ export function createLiveNarrator({
     if (firstAudioAt === null) firstAudioAt = now();
     lastOutputAt = now(); receivedBytes += pcm.length;
     if (!outputInitialized) {
-      // WS emits one ordered, continuous output sample stream beginning at zero.
-      // Arrival latency is not part of that stream or the transcript timestamps.
+      // Our ordered PCM playback stream begins at zero. Native transcript
+      // timestamps use a separate session clock and are mapped below.
       outputCursor = 0;
       outputInitialized = true;
     }
@@ -163,17 +174,39 @@ export function createLiveNarrator({
     while (pendingPcm.length >= bytes) {
       queueAudio(pendingPcm.subarray(0, bytes)); pendingPcm = pendingPcm.subarray(bytes);
     }
+    if (pendingCaptions.length) {
+      const waiting = pendingCaptions; pendingCaptions = [];
+      for (const event of waiting) appendCaption(event);
+    }
   }
   function receiveCaption(event) {
     if (typeof event.delta !== 'string' || !event.delta || !Number.isFinite(event.start_ms) || !Number.isFinite(event.end_ms)) return;
     if (event.start_ms < 0 || event.end_ms < event.start_ms) return;
     if (firstTranscriptAt === null) firstTranscriptAt = now();
     transcriptFragments++;
+    if (receivedBytes === 0) {
+      if (pendingCaptions.length >= 64) { pendingCaptions.shift(); droppedCaptions++; }
+      pendingCaptions.push(event);
+      return;
+    }
+    appendCaption(event);
+  }
+  function appendCaption(event) {
     // No synthetic fallback captions: these are exactly the model's spoken text.
+    // Native timestamps describe the session timeline, which can drift relative
+    // to returned PCM. Use their duration and the received PCM edge for playback.
+    const media = mapTranscriptToAudio(event.start_ms, event.end_ms, Math.floor(receivedBytes / 2) * 1000 / LIVE_SAMPLE_RATE);
     const last = feed.captions.at(-1);
-    if (last && event.start_ms >= last.startMs && event.start_ms - last.endMs <= 1100 && last.text.length < 90 && !/[。！？!?]$/.test(last.text)) {
-      last.text += event.delta; last.endMs = Math.max(last.endMs, event.end_ms);
-    } else feed.captions.push({ id: `${generationId}:${captionId++}`, text: event.delta, startMs: event.start_ms, endMs: event.end_ms });
+    const native = last && nativeCaptionTimes.get(last.id);
+    if (last && native && event.start_ms >= native.startMs && event.start_ms - native.endMs <= 1100 && last.text.length < 90 && !/[。！？!?]$/.test(last.text)) {
+      last.text += event.delta;
+      last.startMs = Math.min(last.startMs, media.startMs); last.endMs = Math.max(last.endMs, media.endMs);
+      native.endMs = Math.max(native.endMs, event.end_ms);
+    } else {
+      const id = `${generationId}:${captionId++}`;
+      feed.captions.push({ id, text: event.delta, ...media });
+      nativeCaptionTimes.set(id, { startMs: event.start_ms, endMs: event.end_ms });
+    }
     schedulePublish();
   }
   function tick() {
@@ -330,7 +363,7 @@ export function createLiveNarrator({
       firstAudioMs: firstAudioAt === null ? null : firstAudioAt - feed.startedAt,
       firstTranscriptMs: firstTranscriptAt === null ? null : firstTranscriptAt - feed.startedAt,
       audioMs: Math.round(receivedBytes / BYTES_PER_MS), inputAudioMs: Math.round(inputFrames * 1000 / LIVE_SAMPLE_RATE),
-      transcriptFragments, sentFacts, chunks: seq, droppedChunks, usage };
+      transcriptFragments, droppedCaptions, sentFacts, chunks: seq, droppedChunks, usage };
   }
   return { start, observe, finish, status };
 }
