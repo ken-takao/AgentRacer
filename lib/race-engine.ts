@@ -11,7 +11,7 @@ export type RaceInput =
 
 export const RACE_RULES = {
   length: 200,
-  countdownMs: 15_000,
+  countdownMs: 5_000,
   maxRaceMs: 180_000,
   visibleDistance: 60,
   laneChangePerSecond: 1.6,
