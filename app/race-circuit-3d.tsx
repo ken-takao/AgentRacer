@@ -4,10 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { CIRCUIT_3D, CIRCUIT_LAP_DISTANCE, circuitAtDistance, circuitPosition, circuitBodyOffsets } from "../lib/circuit-geometry";
+import { cameraPose, selectAutoShot } from "../lib/race-camera";
+import type { CameraShot } from "../lib/race-camera";
 import "./race-circuit-3d.css";
 
 type DriverId = "red" | "blue";
-type View = "overview" | DriverId;
+type View = "auto" | "overview" | DriverId;
 type CircuitRace = {
   phase: string;
   updatedAt: number;
@@ -22,14 +24,16 @@ const COLORS = { red: 0xff625b, blue: 0x5aa4ff };
 /** A view of server-authoritative positions, with no additional race simulation. */
 export function RaceCircuit3D({ race, decorative = false, onUnavailable }: RaceCircuit3DProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const shotLabelRef = useRef<HTMLSpanElement>(null);
   const labelsRef = useRef<Record<DriverId, HTMLDivElement | null>>({ red: null, blue: null });
   const overlapNoteRef = useRef<HTMLDivElement>(null);
   const latest = useRef(race);
   latest.current = race;
   const unavailableRef = useRef(onUnavailable);
   unavailableRef.current = onUnavailable;
-  const viewRef = useRef<View>("overview");
-  const [view, setView] = useState<View>("overview");
+  const viewRef = useRef<View>(decorative ? "overview" : "auto");
+  const [view, setView] = useState<View>(decorative ? "overview" : "auto");
   const [status, setStatus] = useState<"loading" | "ready" | "unavailable">("loading");
 
   useEffect(() => {
@@ -260,12 +264,23 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable }: RaceC
     // A failed decorative prop leaves a visible geometric barrier in its correct gameplay position.
     void loadModel("/roadster-circuit/props/water_barrier.glb").then(model => { barrierModel = model; gateKey = ""; }).catch(() => {});
 
-    let currentView: View | undefined;
+    const motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let reducedMotion = motionPreference.matches;
+    const onMotionPreference = () => { reducedMotion = motionPreference.matches; shotSlot = -1; };
+    motionPreference.addEventListener("change", onMotionPreference);
+    let previousView: View | undefined;
+    let previousPhase = "";
+    let directorSeconds = 0;
+    let shotSlot = -1;
+    let activeShot: CameraShot = { key: "overview", kind: "overview", label: "コース全体" };
+    let cameraReady = false;
+    let visibleHeight = 89;
+    const desiredEye = new THREE.Vector3();
+    const desiredTarget = new THREE.Vector3();
     const resize = () => {
       const bounds = canvas.getBoundingClientRect();
       width = Math.max(1, bounds.width); height = Math.max(1, bounds.height);
       renderer.setSize(width, height, false);
-      currentView = undefined;
     };
     const observer = new ResizeObserver(resize); observer.observe(canvas); resize();
     const handleContextLost = (event: Event) => { event.preventDefault(); lostContext = true; cancelAnimationFrame(frame); fail(); };
@@ -274,6 +289,7 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable }: RaceC
       if (disposed || lostContext) return;
       frame = requestAnimationFrame(draw);
       if (document.hidden || timestamp - previousFrame < 1000 / 40) return;
+      const dt = previousFrame ? Math.min((timestamp - previousFrame) / 1000, 0.1) : 0;
       previousFrame = timestamp;
       const current = latest.current;
       refreshGates();
@@ -310,21 +326,37 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable }: RaceC
         return display;
       });
       const selectedView = viewRef.current;
-      if (currentView !== selectedView) {
-        currentView = selectedView;
-        const aspect = width / height;
-        const visibleHeight = selectedView === "overview" ? Math.max(89, 146 / aspect) : Math.max(29, 43 / aspect);
-        camera.left = -visibleHeight * aspect / 2; camera.right = visibleHeight * aspect / 2;
-        camera.top = visibleHeight / 2; camera.bottom = -visibleHeight / 2; camera.updateProjectionMatrix();
+      const phaseChanged = previousPhase !== current.phase;
+      if (phaseChanged || previousView !== selectedView) {
+        directorSeconds = 0; shotSlot = -1;
+        previousPhase = current.phase; previousView = selectedView;
       }
-      if (selectedView === "overview") {
-        eye.set(84, 100, 116); target.set(0, 0, -1);
-      } else {
-        const p = anchors[selectedView === "red" ? 0 : 1];
-        const dx = Math.cos(p.heading), dz = Math.sin(p.heading);
-        target.set(p.x + dx * 5, 0, p.z + dz * 5);
-        eye.set(p.x - dx * 17 + dz * 11, 20, p.z - dz * 17 - dx * 11);
+      directorSeconds += dt;
+      const slot = Math.floor(directorSeconds / 7);
+      if (shotSlot !== slot) {
+        shotSlot = slot;
+        if (selectedView === "auto" && !reducedMotion) {
+          activeShot = selectAutoShot(current.phase, slot, anchors, DRIVERS.map(id => current.players[id].progress));
+        } else if (selectedView === "red" || selectedView === "blue") {
+          activeShot = { key: selectedView, kind: "chase", focus: selectedView === "red" ? 0 : 1, label: selectedView === "red" ? "SCARLET 追従" : "COBALT 追従" };
+        } else {
+          activeShot = { key: "overview", kind: "overview", label: reducedMotion && selectedView === "auto" ? "コース全体 · 動きを抑制" : "コース全体" };
+        }
+        if (stageRef.current) stageRef.current.dataset.cameraShot = activeShot.key;
+        if (shotLabelRef.current) shotLabelRef.current.textContent = `${selectedView === "auto" ? "AUTO" : "MANUAL"} · ${activeShot.label}`;
       }
+      const moving = selectedView === "auto" && !reducedMotion && (current.phase === "racing" || current.phase === "lobby");
+      const pose = cameraPose(activeShot, anchors, width / height, directorSeconds, moving);
+      desiredEye.set(...pose.eye); desiredTarget.set(...pose.target);
+      // Smooth world-space vectors rather than yaw angles to avoid wraparound spins.
+      const blend = !cameraReady || reducedMotion ? 1 : 1 - Math.exp(-dt * 3.8);
+      eye.lerp(desiredEye, blend); target.lerp(desiredTarget, blend);
+      visibleHeight += (pose.height - visibleHeight) * blend;
+      cameraReady = true;
+      const aspect = width / height;
+      camera.left = -visibleHeight * aspect / 2; camera.right = visibleHeight * aspect / 2;
+      camera.top = visibleHeight / 2; camera.bottom = -visibleHeight / 2;
+      camera.updateProjectionMatrix();
       camera.position.copy(eye); camera.up.copy(up); camera.lookAt(target); camera.updateMatrixWorld();
       lightMaterial.color.set(current.phase === "racing" ? 0xb8f065 : 0xff5b4d);
       lightMaterial.emissive.copy(lightMaterial.color);
@@ -344,6 +376,7 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable }: RaceC
     frame = requestAnimationFrame(draw);
     return () => {
       disposed = true; abort.abort(); cancelAnimationFrame(frame); observer.disconnect();
+      motionPreference.removeEventListener("change", onMotionPreference);
       canvas.removeEventListener("webglcontextlost", handleContextLost);
       sun.shadow.map?.dispose();
       disposeRoots(roots);
@@ -352,15 +385,15 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable }: RaceC
   }, []);
 
   const chooseView = (next: View) => { viewRef.current = next; setView(next); };
-  return <div className={`race-circuit-3d${decorative ? " is-decorative" : ""}`} data-renderer="three-dimensional" data-scene-status={status}>
+  return <div ref={stageRef} className={`race-circuit-3d${decorative ? " is-decorative" : ""}`} data-renderer="three-dimensional" data-scene-status={status} data-camera-mode={view}>
     <canvas ref={canvasRef} aria-label="赤と青のロードスターが走る3Dの3レーンレースコース" role="img" />
     <div className="circuit-3d-topline"><span><i />TOKYO CIRCUIT <b>3D</b></span><small>3 LANES · 1 LAP</small></div>
     {DRIVERS.map(id => <div key={id} ref={element => { labelsRef.current[id] = element; }} className={`circuit-3d-car-label is-${id}`}><i />{id === "red" ? "SCARLET" : "COBALT"}</div>)}
     {status === "loading" && <div className="circuit-3d-loading" role="status"><i />3Dサーキットを準備しています</div>}
     {status === "unavailable" && <div className="circuit-3d-unavailable" role="status">3D表示を読み込めませんでした。ページを再読み込みしてください。</div>}
-    {!decorative && <div className="circuit-3d-cameras" role="group" aria-label="観戦カメラ"><span>CAMERA</span><button type="button" aria-pressed={view === "overview"} onClick={() => chooseView("overview")}>コース全体</button><button type="button" className="red-camera" aria-pressed={view === "red"} onClick={() => chooseView("red")}>SCARLET</button><button type="button" className="blue-camera" aria-pressed={view === "blue"} onClick={() => chooseView("blue")}>COBALT</button></div>}
+    {!decorative && <div className="circuit-3d-cameras" role="group" aria-label="観戦カメラ"><span>CAMERA</span><button type="button" className="auto-camera" aria-pressed={view === "auto"} onClick={() => chooseView("auto")}>自動</button><button type="button" aria-pressed={view === "overview"} onClick={() => chooseView("overview")}>コース全体</button><button type="button" className="red-camera" aria-pressed={view === "red"} onClick={() => chooseView("red")}>SCARLET</button><button type="button" className="blue-camera" aria-pressed={view === "blue"} onClick={() => chooseView("blue")}>COBALT</button></div>}
     <div ref={overlapNoteRef} className="circuit-3d-overlap-note" hidden>接近中：車体を左右にずらして表示 · リングが実際の位置</div>
-    <div className="circuit-3d-caption">{view === "overview" ? "BROADCAST VIEW" : "ONBOARD VIEW"}<span>LIVE POSITIONS</span></div>
+    <div className="circuit-3d-caption"><span ref={shotLabelRef}>{view === "auto" ? "AUTO · コース全体" : "MANUAL · コース全体"}</span><small>LIVE POSITIONS</small></div>
   </div>;
 }
 
