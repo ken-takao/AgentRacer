@@ -186,6 +186,8 @@ export function NarrationPreviewScreen() {
   const [initial] = useState(() => previewRace(0));
   const [captions, setCaptions] = useState<{ id: string; text: string; startMs: number; endMs: number }[]>([]);
   const [cursor, setCursor] = useState(0);
+  const [sampleDuration, setSampleDuration] = useState<number | null>(null);
+  const [sampleAudioUrl, setSampleAudioUrl] = useState<string>();
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(90);
@@ -203,13 +205,22 @@ export function NarrationPreviewScreen() {
   }, [initial]);
   useEffect(() => {
     const abort = new AbortController();
-    void fetch("/audio/hayate-commentary-demo.json", { signal: abort.signal }).then(async response => {
+    let objectUrl: string | undefined;
+    // A local Blob remains seekable even if the CDN ignores HTTP range requests.
+    void fetch("/audio/hayate-commentary-demo.wav", { signal: abort.signal, cache: "no-store" }).then(async response => {
+      if (!response.ok) throw new Error("Sample audio unavailable");
+      const audio = await response.blob();
+      if (abort.signal.aborted) return;
+      objectUrl = URL.createObjectURL(audio);
+      setSampleAudioUrl(objectUrl);
+    }).catch(() => { if (!abort.signal.aborted) setSampleError("収録音声を読み込めませんでした"); });
+    void fetch("/audio/hayate-commentary-demo.json", { signal: abort.signal, cache: "no-store" }).then(async response => {
       if (!response.ok) throw new Error("Sample unavailable");
       const data = await response.json() as { captions?: typeof captions };
       if (!Array.isArray(data.captions) || !data.captions.every(item => typeof item.id === "string" && typeof item.text === "string" && Number.isFinite(item.startMs) && Number.isFinite(item.endMs))) throw new Error("Invalid sample");
       if (!abort.signal.aborted) setCaptions(data.captions);
     }).catch(() => { if (!abort.signal.aborted) setSampleError("収録サンプルを読み込めませんでした"); });
-    return () => abort.abort();
+    return () => { abort.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, []);
   useEffect(() => {
     if (!playing) return;
@@ -230,16 +241,16 @@ export function NarrationPreviewScreen() {
     catch { setSampleError("再生ボタンを押すと音声を有効にできます"); }
   };
   const caption = captions.filter(item => item.startMs <= cursor && cursor < item.endMs + 1200).at(-1);
-  const scenes = [{ label: "スタート", pattern: /スタート/ }, { label: "障害物", pattern: /障害物/ }, { label: "接触", pattern: /接触/ }, { label: "ゴール", pattern: /ゴール/ }];
+  const scenes = [{ label: "スタート", pattern: /スタート/ }, { label: "障害物", pattern: /障害物/ }, { label: "接触", pattern: /両車.*接触|車同士.*接触/ }, { label: "ゴール", pattern: /ゴール/ }];
   return <div className="spectator-shell narration-preview-shell"><SiteHeader />
-    <audio ref={audioRef} src="/audio/hayate-commentary-demo.wav" preload="auto" hidden onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onTimeUpdate={() => setCursor((audioRef.current?.currentTime || 0) * 1000)} onError={() => setSampleError("収録音声を読み込めませんでした")} />
+    <audio ref={audioRef} src={sampleAudioUrl} preload="auto" hidden onLoadedMetadata={() => setSampleDuration(audioRef.current?.duration || null)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onTimeUpdate={() => setCursor((audioRef.current?.currentTime || 0) * 1000)} onError={() => setSampleError("収録音声を読み込めませんでした")} />
     <main className="spectator-main">
       <div className="race-heading"><div><div className="eyebrow">GPT-LIVEで生成した実況サンプル / 収録再生</div><h1>The voice of <em>the race.</em></h1></div><a className="subtle-link" href="/">ホームへ戻る<ArrowUpRight size={15} /></a></div>
       <div className="spectator-toolbar narration-preview-controls">
         <button type="button" aria-pressed={playing} onClick={() => playing ? audioRef.current?.pause() : void playSample(muted)}>{playing ? "一時停止" : "実況を再生"}</button>
         <button type="button" onClick={() => void playSample(true)}>字幕だけで再生</button>
         {scenes.map(scene => { const entry = captions.find(item => scene.pattern.test(item.text)); return <button type="button" className="narration-scene-jump" key={scene.label} disabled={!entry} onClick={() => void playSample(muted, entry ? Math.max(0, entry.startMs - 100) : 0)}>{scene.label}</button>; })}
-        <small>{(cursor / 1000).toFixed(1)}s / 34.9s · 収録サンプル</small>
+        <small>{(cursor / 1000).toFixed(1)}s / {sampleDuration?.toFixed(1) ?? "--"}s · 収録サンプル</small>
       </div>
       <div className="race-dashboard">
         <section className="track-panel spectator-track" aria-label="3Dと収録実況のプレビュー">
