@@ -20,10 +20,11 @@ type Playback = {
   buffers: Map<number, AudioBuffer>;
   pending: boolean;
   enabled: boolean;
+  mediaStarted: boolean;
   disposed: boolean;
   revision: number;
 };
-const PLAYBACK_DELAY_MS = 2400;
+const PLAYBACK_DELAY_MS = 3000;
 const CAPTION_HOLD_MS = 1200;
 const BUFFER_AHEAD_MS = 5000;
 
@@ -43,13 +44,17 @@ function mediaEdge(feed: NarrationFeed) {
   return Math.max(0, ...feed.chunks.map(chunk => chunk.startMs + chunk.durationMs), ...feed.captions.map(caption => caption.endMs));
 }
 function liveCursor(feed: NarrationFeed) {
-  // Arrival timestamps and media timestamps are both relative to session start.
-  const edge = feed.status === "ended" || feed.status === "error" ? mediaEdge(feed) : Math.max(mediaEdge(feed), feed.updatedAt - feed.startedAt);
+  // Reserve three seconds of published audio. Model output, chunk assembly and
+  // storage publication already consumed time before a chunk reaches this feed;
+  // a wall-clock or transcript edge would incorrectly spend that reserve twice.
+  const audioEdge = Math.max(0, ...feed.chunks.map(chunk => chunk.startMs + chunk.durationMs));
+  const edge = feed.status === "ended" || feed.status === "error" ? mediaEdge(feed) : audioEdge;
   // Keep a negative cursor at session startup so the first words get the same
   // buffering time as later audio instead of being clipped while downloading.
   return Math.max(0, edge) - PLAYBACK_DELAY_MS;
 }
 function cursorNow(playback: Playback) {
+  if (!playback.mediaStarted) return -PLAYBACK_DELAY_MS;
   return playback.clock ? playback.clock.cursor + performance.now() - playback.clock.at : 0;
 }
 function stopSources(playback: Playback) {
@@ -86,7 +91,7 @@ function terminalReplayStart(feed: NarrationFeed) {
   return Math.max(earliest, latest ? latest.startMs - 150 : mediaEdge(feed) - 4000);
 }
 function emptyPlayback(): Playback {
-  return { feed: null, clock: null, context: null, gain: null, sources: new Map(), scheduled: new Set(), buffers: new Map(), pending: false, enabled: false, disposed: false, revision: 0 };
+  return { feed: null, clock: null, context: null, gain: null, sources: new Map(), scheduled: new Set(), buffers: new Map(), pending: false, enabled: false, mediaStarted: false, disposed: false, revision: 0 };
 }
 
 /** A single race-wide audio feed; this component never opens an AI session. */
@@ -133,11 +138,17 @@ function RaceNarrationSession({ raceId, onSpeakingChange }: { raceId: string; on
           if (playback.disposed) return;
           if (feed.generationId !== playback.feed?.generationId || feed.startedAt !== playback.feed?.startedAt) {
             playback.revision++;
+            playback.mediaStarted = feed.chunks.length > 0;
             playback.buffers.clear();
             resetClock(feed);
-          } else if (playback.clock && (feed.status === "connecting" || feed.status === "live")
-            && Math.abs(liveCursor(feed) - cursorNow(playback)) > 5500) {
-            // A suspended tab rejoins the live feed instead of replaying a backlog.
+          } else if (!playback.mediaStarted && feed.chunks.length > 0) {
+            // The connecting feed must not start a clock before audio exists.
+            playback.mediaStarted = true;
+            resetClock(feed);
+          } else if (playback.mediaStarted && playback.clock && (feed.status === "connecting" || feed.status === "live")
+            && liveCursor(feed) - cursorNow(playback) > 5500) {
+            // Only skip forward after a long stall. Never rewind on normal
+            // publication jitter, which would replay audio and cause jumps.
             resetClock(feed);
           }
           playback.feed = feed;
