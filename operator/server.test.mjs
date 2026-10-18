@@ -18,6 +18,13 @@ test('driving evidence excludes joins and READY actions', () => {
   ] }), { red: 2, blue: 1 });
 });
 
+test('route choices count as driving evidence, contacts do not', () => {
+  assert.deepEqual(drivingInputs({ history: [
+    { type: 'route_change', playerId: 'red' }, { type: 'car_collision' },
+    { type: 'route_entered', playerId: 'blue' },
+  ] }), { red: 1, blue: 0 });
+});
+
 test('SSE decoder accepts fragmented CRLF and multiline data', async () => {
   const encoder = new TextEncoder();
   const chunks = ['event: message\r\nda', 'ta: {"value":\r\n', 'data: 7}\r', '\n\r\n: heartbeat\n\ndata: [DONE]\n\n'];

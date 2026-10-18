@@ -10,9 +10,9 @@
 @media(max-width:700px){.race-circuit-3d{min-height:310px;aspect-ratio:1.25}.circuit-3d-topline{top:14px;left:14px;right:14px;font-size:8px;letter-spacing:1px}.circuit-3d-topline small{font-size:7px}.circuit-3d-cameras{left:12px;bottom:12px;gap:1px;padding:4px}.circuit-3d-cameras>span{display:none}.circuit-3d-cameras button{font-size:9px;padding:7px 6px}.circuit-3d-caption{right:12px;bottom:14px;font-size:6px;letter-spacing:.7px}.circuit-3d-caption small{font-size:6px}.circuit-3d-car-label{font-size:7px;padding:3px 4px;letter-spacing:.4px}.circuit-3d-loading{font-size:10px}}
 @media(prefers-reduced-motion:reduce){.circuit-3d-loading i{animation:none}.circuit-3d-cameras button{transition:none}}
 
-.circuit-3d-overlap-note{position:absolute;left:50%;bottom:73px;transform:translateX(-50%);width:max-content;max-width:90%;padding:5px 8px;background:#0b1b23dc;border-radius:3px;color:#bed0d0;font-size:9px;line-height:1.5;text-align:center;pointer-events:none}.circuit-3d-overlap-note[hidden]{display:none}
-@media(max-width:700px){.circuit-3d-overlap-note{bottom:56px;font-size:8px}}
 
 .circuit-3d-caption>span{display:block;font-size:9px;letter-spacing:.6px;color:#c7dcd9}.circuit-3d-caption small{display:block}.circuit-3d-cameras .auto-camera{font-weight:700}.circuit-3d-cameras .auto-camera[aria-pressed=true]{box-shadow:0 0 12px #d1e89a25}
-@media(max-width:900px){.circuit-3d-caption{bottom:70px;right:15px}.circuit-3d-caption>span{font-size:8px}.circuit-3d-overlap-note{bottom:96px}}
-@media(max-width:700px){.circuit-3d-caption{bottom:58px;right:13px}.circuit-3d-cameras{right:12px;width:max-content;max-width:calc(100% - 24px);flex-wrap:wrap}.circuit-3d-cameras button{padding:7px 6px}.circuit-3d-overlap-note{bottom:83px}}
+@media(max-width:900px){.circuit-3d-caption{bottom:70px;right:15px}.circuit-3d-caption>span{font-size:8px}}
+@media(max-width:700px){.circuit-3d-caption{bottom:58px;right:13px}.circuit-3d-cameras{right:12px;width:max-content;max-width:calc(100% - 24px);flex-wrap:wrap}.circuit-3d-cameras button{padding:7px 6px}}
+
+.race-circuit-3d:after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(180deg,#061b2938,transparent 22%,transparent 72%,#061b2966);z-index:1}.circuit-3d-topline,.circuit-3d-cameras,.circuit-3d-caption{z-index:2}

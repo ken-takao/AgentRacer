@@ -14,6 +14,10 @@ export class RaceApiError extends Error {
 }
 
 const knownErrors: Record<string, string> = {
+  "Unknown route": "進路はLEFTかRIGHTを選んでください。",
+  "Unknown junction": "この分岐は見つかりません。画面を更新してください。",
+  "The route is locked after entering the junction": "分岐に入りました。次の分岐で進路を選んでください。",
+  "The race simulation could not advance": "レースを進められませんでした。オペレーター画面から新しいレースを開始してください。",
   "Race not found": "レースが見つかりません。URLを確認してください。",
   "Player link expired": "参加用URLの有効期限が切れています。新しいレースに参加してください。",
   "Player authentication required": "参加用URLから開き直してください。",

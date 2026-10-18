@@ -1,58 +1,59 @@
-export type CameraAnchor = { x: number; z: number; heading: number };
-export type CameraShot = {
-  key: string;
-  label: string;
-  kind: "overview" | "chase" | "side" | "duel" | "grid";
-  focus?: 0 | 1;
-};
-export type CameraPose = { eye: [number, number, number]; target: [number, number, number]; height: number };
-
+export type CameraAnchor = { x: number; y?: number; z: number; heading: number; slope?: number; speed?: number };
+export type CameraShot = { key: string; label: string; kind: "overview" | "chase" | "side" | "duel" | "grid"; focus?: 0 | 1 };
+export type CameraPose = { eye: [number, number, number]; target: [number, number, number]; fov: number };
 const driverName = (focus: 0 | 1) => focus === 0 ? "SCARLET" : "COBALT";
 const finite = (value: number | undefined, fallback = 0) => Number.isFinite(value) ? value as number : fallback;
-const safeAnchor = (anchor?: CameraAnchor): CameraAnchor => ({ x: finite(anchor?.x), z: finite(anchor?.z), heading: finite(anchor?.heading) });
+const safeAnchor = (anchor?: CameraAnchor) => ({ x: finite(anchor?.x), y: finite(anchor?.y), z: finite(anchor?.z), heading: finite(anchor?.heading), slope: finite(anchor?.slope), speed: finite(anchor?.speed) });
 
-/** The caller advances the slot only after the current shot's minimum dwell time. */
-export function selectAutoShot(phase: string, slot: number, anchors: CameraAnchor[], progress: number[]): CameraShot {
-  if (phase === "countdown") return { key: "grid", label: "STARTING GRID", kind: "grid" };
-  if (phase !== "racing") return { key: phase === "lobby" ? "waiting" : "overview", label: phase === "lobby" ? "GRID FORMING" : "CIRCUIT VIEW", kind: "overview" };
-  const step = ((Math.floor(finite(slot)) % 6) + 6) % 6;
-  if (step === 0) return { key: "overview", label: "CIRCUIT VIEW", kind: "overview" };
-  const shot = (kind: "chase" | "side", focus: 0 | 1): CameraShot => ({ key: `${kind}-${focus}`, label: `${driverName(focus)} · ${kind === "chase" ? "CHASE" : "TRACKSIDE"}`, kind, focus });
-  if (step === 1) return shot("chase", 0);
-  if (step === 2) return shot("side", 1);
-  if (step === 3) {
-    const a = safeAnchor(anchors[0]), b = safeAnchor(anchors[1]);
-    if (Math.hypot(a.x - b.x, a.z - b.z) < 36) return { key: "duel", label: "BATTLE CAM", kind: "duel" };
-    return shot("side", finite(progress[0]) >= finite(progress[1]) ? 0 : 1);
-  }
-  return step === 4 ? shot("chase", 1) : shot("side", 0);
+/** Smooth orientation without interpolating the camera through the tracked vehicle. */
+export function smoothCameraHeading(previous: number, current: number, dt: number): number {
+  if (!Number.isFinite(previous)) return finite(current);
+  const delta = Math.atan2(Math.sin(current - previous), Math.cos(current - previous));
+  return previous + delta * (1 - Math.exp(-Math.max(0, finite(dt)) * 12));
 }
 
-/** Camera-only presentation; never advances or changes either driver's position. */
-export function cameraPose(shot: CameraShot, anchors: CameraAnchor[], aspect: number, seconds: number, moving: boolean): CameraPose {
+/** A 40-second broadcast cycle spends 37 seconds near the cars, 3 on the full circuit. */
+export function selectAutoShot(phase: string, seconds: number, anchors: CameraAnchor[], progress: number[]): CameraShot {
+  if (phase === "countdown" || phase === "lobby") return { key: "grid", label: phase === "lobby" ? "GRID FORMING" : "STARTING GRID", kind: "grid" };
+  if (phase !== "racing") return { key: "overview", label: "CIRCUIT VIEW", kind: "overview" };
+  const t = ((finite(seconds) % 40) + 40) % 40;
+  const shot = (kind: "chase" | "side", focus: 0 | 1): CameraShot => ({ key: `${kind}-${focus}`, label: `${driverName(focus)} · ${kind === "chase" ? "CHASE" : "TRACKSIDE"}`, kind, focus });
+  if (t < 8) return shot("chase", 0);
+  if (t < 15) return shot("side", 1);
+  if (t < 22) {
+    const a = safeAnchor(anchors[0]), b = safeAnchor(anchors[1]);
+    if (Math.hypot(a.x - b.x, a.z - b.z) < 22 && Math.abs(a.y - b.y) < 4) return { key: "duel", label: "BATTLE CAM", kind: "duel" };
+    return shot("side", finite(progress[0]) >= finite(progress[1]) ? 0 : 1);
+  }
+  if (t < 30) return shot("chase", 1);
+  if (t < 37) return shot("side", 0);
+  return { key: "overview", label: "CIRCUIT VIEW", kind: "overview" };
+}
+
+/** Real perspective, low camera positions and forward framing make track-side motion readable. */
+export function cameraPose(shot: CameraShot, anchors: CameraAnchor[], aspect: number, seconds: number, moving: boolean, bounds = { width: 246, depth: 154 }): CameraPose {
   const ratio = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
   const t = moving ? finite(seconds) : 0;
   const a = safeAnchor(anchors[0]), b = safeAnchor(anchors[1]);
+  const portrait = Math.max(1, 1.15 / ratio);
   if (shot.kind === "overview") {
-    const angle = Math.atan2(116, 84) + Math.sin(t * 0.13) * 0.045;
-    const radius = Math.hypot(84, 116);
-    return { eye: [Math.cos(angle) * radius, 100 + Math.sin(t * 0.11) * 1.5, Math.sin(angle) * radius], target: [0, 0, -1], height: Math.max(89, 146 / ratio) };
+    const size = Math.max(bounds.width / Math.min(ratio, 1.65), bounds.depth) / 154;
+    return { eye: [102 * size, 163 * size, 156 * size], target: [0, 0, 0], fov: 47 };
   }
   if (shot.kind === "duel" || shot.kind === "grid") {
-    const x = (a.x + b.x) / 2, z = (a.z + b.z) / 2;
-    const gap = Math.hypot(a.x - b.x, a.z - b.z);
-    // A gap-sized square contains both cars for every heading and viewport aspect.
-    const extent = Math.max(shot.kind === "grid" ? 38 : 34, gap + 18);
-    const sway = shot.kind === "duel" ? Math.sin(t * 0.22) * 3 : 0;
-    return { eye: [x - 24 + sway, shot.kind === "grid" ? 26 : 36, z + 31], target: [x, 0.8, z], height: Math.max(extent, extent / ratio) };
+    const x = (a.x + b.x) / 2, y = Math.max(a.y, b.y), z = (a.z + b.z) / 2;
+    const gap = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+    const extent = Math.max(1, gap / 10) * portrait;
+    const dx = Math.cos(a.heading), dz = Math.sin(a.heading);
+    return { eye: [x - dx * 12 * extent + dz * 9 * extent, y + 7 * extent, z - dz * 12 * extent - dx * 9 * extent], target: [x + dx * 1.5, y + 1, z + dz * 1.5], fov: 59 };
   }
   const p = shot.focus === 1 ? b : a;
   const dx = Math.cos(p.heading), dz = Math.sin(p.heading);
+  const speedFov = moving ? Math.min(7, Math.max(0, p.speed) * 2) : 0;
   if (shot.kind === "chase") {
-    const side = 11 + Math.sin(t * 0.3) * 1.2;
-    return { eye: [p.x - dx * 17 + dz * side, 20.5 + Math.sin(t * 0.24) * 0.5, p.z - dz * 17 - dx * side], target: [p.x + dx * 5, 0.8, p.z + dz * 5], height: Math.max(29, 43 / ratio) };
+    const side = 2.7 + Math.sin(t * 0.25) * 0.35;
+    return { eye: [p.x - dx * 11.5 * portrait + dz * side, p.y + 5.2 * portrait, p.z - dz * 11.5 * portrait - dx * side], target: [p.x + dx * 4.2, p.y + 1.05 + Math.sin(p.slope) * 4.2, p.z + dz * 4.2], fov: 59 + speedFov };
   }
-  const front = 7 + Math.sin(t * 0.27) * 3;
-  const side = 23 + Math.sin(t * 0.17) * 2;
-  return { eye: [p.x + dx * front + dz * side, 23 + Math.sin(t * 0.21), p.z + dz * front - dx * side], target: [p.x + dx * 2, 0.8, p.z + dz * 2], height: Math.max(30, 44 / ratio) };
+  const front = 1.5 + Math.sin(t * 0.24) * 1.0;
+  return { eye: [p.x + dx * front + dz * 13 * portrait, p.y + 4.8 * portrait, p.z + dz * front - dx * 13 * portrait], target: [p.x + dx * 2.1, p.y + 1, p.z + dz * 2.1], fov: 58 + speedFov };
 }

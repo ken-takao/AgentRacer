@@ -8,6 +8,8 @@ const raceAt = (elapsedMs: number) => RACE_RULES.countdownMs + elapsedMs;
 
 function ready(seed = "test", epoch = 0): RaceState {
   let state = createRace(seed, epoch);
+  // These are the persisted v1 contract fixtures. V2 interactions have their own suite.
+  state.version = 1;
   for (const id of ["red", "blue"] as const) {
     state = applyInput(state, id, { type: "join" }, epoch);
     state = applyInput(state, id, { type: "ready" }, epoch);
@@ -140,6 +142,7 @@ if (!process.argv.includes("--epoch-clock-regressions")) {
   // Minimized state from the production request that exhausted the worker's
   // CPU limit. Only race physics are retained; there are no player credentials.
   const recovered = createRace("production-clock-regression", 1_792_304_450_711);
+  recovered.version = 1;
   recovered.phase = "racing";
   recovered.startedAt = recovered.countdownEndsAt = 1_792_304_525_129;
   recovered.updatedAt = 1_792_304_530_144;
