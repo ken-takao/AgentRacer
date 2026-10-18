@@ -3,11 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { circuitAtProgress, circuitBounds, circuitPosition } from "../lib/circuit-geometry";
-import { COURSE_NAMES, type CourseFeatures, type RouteChoice } from "../lib/race-course";
+import { CIRCUIT_3D, CIRCUIT_ROAD_SURFACE, circuitAtProgress, circuitBounds, circuitPosition, circuitRoadEdges, circuitEdgeExposed, circuitSurfaceFrame } from "../lib/circuit-geometry";
+import { COURSE_NAMES, selectedRoute, type CourseFeatures, type RouteChoice } from "../lib/race-course";
 import { cameraPose, selectAutoShot, smoothCameraHeading, type CameraShot } from "../lib/race-camera";
 import { getObstacleAsset } from "../lib/obstacle-catalog";
 import { raceEffectsAt, type RaceEffectState } from "../lib/race-effects";
+import { modelGroundingOffset, modelSupportPoints, roadModelSupport, surfaceFrame, type ContactVector } from "../lib/model-contact";
+import { RaceRouteStatus } from "./race-route-status";
 import "./race-circuit-3d.css";
 
 type DriverId = "red" | "blue";
@@ -59,7 +61,7 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.28;
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x17313d);
     scene.fog = new THREE.Fog(0x17313d, 185, 410);
@@ -86,6 +88,36 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
       boxTransform.position.set(x, y, z); boxTransform.scale.set(w, h, d); boxTransform.updateMatrix();
       batch.matrices.push(boxTransform.matrix.clone());
     };
+    const poseBasis = new THREE.Matrix4();
+    const basisX = new THREE.Vector3(), basisY = new THREE.Vector3(), basisZ = new THREE.Vector3();
+    const orient = (object: THREE.Object3D, point: ReturnType<typeof circuitAtProgress>, exact: ReturnType<typeof circuitSurfaceFrame>, yaw = 0) => {
+      const basis = surfaceFrame({ ...point, ...exact }, yaw);
+      basisX.set(basis.forward.x, basis.forward.y, basis.forward.z);
+      basisY.set(basis.normal.x, basis.normal.y, basis.normal.z);
+      basisZ.set(basis.right.x, basis.right.y, basis.right.z);
+      poseBasis.makeBasis(basisX, basisY, basisZ); object.quaternion.setFromRotationMatrix(poseBasis);
+      return basis;
+    };
+    const assetSupport = new WeakMap<THREE.Object3D, ContactVector[]>();
+    const carSupport: Partial<Record<DriverId, ContactVector[]>> = {};
+    const groundAsset = (model: THREE.Group, scale = 1, yaw = 0) => {
+      const normalized = new THREE.Group(); model.scale.setScalar(scale); model.rotation.y = yaw; normalized.add(model);
+      normalized.updateMatrixWorld(true);
+      const adjustment = modelGroundingOffset(new THREE.Box3().setFromObject(normalized, true));
+      model.position.add(new THREE.Vector3(adjustment.x, adjustment.y, adjustment.z));
+      normalized.updateMatrixWorld(true);
+      const vertices: ContactVector[] = [], vertex = new THREE.Vector3();
+      normalized.traverse(object => {
+        if (!(object instanceof THREE.Mesh)) return;
+        const positions = object.geometry.getAttribute("position");
+        for (let i = 0; i < positions.count; i++) {
+          vertex.fromBufferAttribute(positions, i).applyMatrix4(object.matrixWorld);
+          vertices.push({ x: vertex.x, y: vertex.y, z: vertex.z });
+        }
+      });
+      assetSupport.set(normalized, modelSupportPoints(vertices));
+      return normalized;
+    };
     const textPlane = (text: string, textWidth: number, color: string, x: number, y: number, z: number, heading = 0) => {
       const bitmap = document.createElement("canvas"); bitmap.width = 1024; bitmap.height = 160;
       const context = bitmap.getContext("2d"); if (!context) return;
@@ -106,12 +138,14 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
       sectionStart = junction.end;
     }
     sections.push({ start: sectionStart, end: course.length, routes: {}, accent: lime });
-    const ribbon = (section: Section, inner: number, outer: number, elevation: number, mat: THREE.Material) => {
+    const ribbon = (section: Section, inner: number, outer: number, elevation: number, mat: THREE.Material, clipWidth = 6.3) => {
       const positions: number[] = [], indices: number[] = [];
       const segments = Math.max(8, Math.ceil((section.end - section.start) / course.length * (complex ? 850 : 400)));
       for (let i = 0; i <= segments; i++) {
         const progress = section.start + (section.end - section.start) * i / segments;
-        for (const offset of [inner, outer]) {
+        const edges = circuitRoadEdges(progress, clipWidth, course.length, course, section.routes);
+        for (const rawOffset of [inner, outer]) {
+          const offset = Math.max(edges[0], Math.min(edges[1], rawOffset));
           const p = circuitAtProgress(progress, offset, course.length, course, section.routes);
           positions.push(p.x, p.y + elevation, p.z);
         }
@@ -123,42 +157,35 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
     const dashGeometry = new THREE.BoxGeometry(1.3, 0.025, 0.11), curbGeometry = new THREE.BoxGeometry(1.6, 0.15, 0.65), wallGeometry = new THREE.BoxGeometry(2.3, 0.65, 0.25);
     assets.add(new THREE.Mesh(dashGeometry, white), new THREE.Mesh(curbGeometry, lime), new THREE.Mesh(wallGeometry, rail));
     const instanceGroups = new Map<string, { geometry: THREE.BufferGeometry; material: THREE.Material; matrices: THREE.Matrix4[] }>();
-    const marker = (geometry: THREE.BufferGeometry, mat: THREE.Material, p: ReturnType<typeof circuitAtProgress>, height: number) => {
+    const marker = (geometry: THREE.BufferGeometry, mat: THREE.Material, p: ReturnType<typeof circuitAtProgress>, height: number, progress: number, offset: number, routes: Record<string, RouteChoice>) => {
       const key = `${geometry.uuid}:${mat.uuid}`;
       let batch = instanceGroups.get(key);
       if (!batch) { batch = { geometry, material: mat, matrices: [] }; instanceGroups.set(key, batch); }
-      const transform = new THREE.Object3D(); transform.position.set(p.x, p.y + height, p.z); transform.rotation.set(0, -p.heading, p.slope, "YXZ"); transform.updateMatrix(); batch.matrices.push(transform.matrix.clone());
+      const transform = new THREE.Object3D(); transform.position.set(p.x, p.y + height, p.z); orient(transform, p, circuitSurfaceFrame(progress, offset, course.length, course, routes)); transform.updateMatrix(); batch.matrices.push(transform.matrix.clone());
     };
     for (const section of sections) {
       if (section.end <= section.start) continue;
-      ribbon(section, -7.6, 7.6, -0.18, concrete);
-      ribbon(section, -6.3, 6.3, 0.02, asphalt);
+      ribbon(section, -7.6, 7.6, -0.18, concrete, 7.6);
+      ribbon(section, -6.3, 6.3, CIRCUIT_ROAD_SURFACE, asphalt);
       ribbon(section, -6.32, -6.16, 0.065, white); ribbon(section, 6.16, 6.32, 0.065, white);
       const count = Math.max(2, Math.ceil((section.end - section.start) / course.length * (complex ? 300 : 145)));
       for (let i = 0; i < count; i++) {
         const progress = section.start + (section.end - section.start) * (i + 0.5) / count;
         if (i % 2 === 0) for (const offset of [-2.1, 2.1]) {
           const p = circuitAtProgress(progress, offset, course.length, course, section.routes);
-          marker(dashGeometry, white, p, 0.08);
+          const edges = circuitRoadEdges(progress, 6.3, course.length, course, section.routes);
+          if (offset > edges[0] + .15 && offset < edges[1] - .15) marker(dashGeometry, white, p, 0.08, progress, offset, section.routes);
         }
         for (const offset of [-6.9, 6.9]) {
-          const branch = Object.values(section.routes)[0];
-          const amount = (progress - section.start) / (section.end - section.start);
-          const inner = (branch === "left" && offset > 0) || (branch === "right" && offset < 0);
-          if (branch && inner && (amount < 0.36 || amount > 0.64)) continue;
+          if (!circuitEdgeExposed(progress, offset, course.length, course, section.routes, Math.hypot(.8, .325))) continue;
           const p = circuitAtProgress(progress, offset, course.length, course, section.routes);
-          marker(curbGeometry, i % 2 ? dark : section.accent, p, 0.07);
+          marker(curbGeometry, i % 2 ? dark : section.accent, p, 0.10, progress, offset, section.routes);
         }
         // Continuous roadside markers close to the camera provide honest speed cues.
         if (i % 2 === 0) for (const offset of [-8.5, 8.5]) {
-          const branch = Object.values(section.routes)[0];
-          const amount = (progress - section.start) / (section.end - section.start);
-          // Keep fork mouths and merges completely open; no intersecting guardrail tips.
-          if (branch && (amount < 0.28 || amount > 0.72)) continue;
-          const inner = (branch === "left" && offset > 0) || (branch === "right" && offset < 0);
-          if (branch && inner && (amount < 0.36 || amount > 0.64)) continue;
+          if (!circuitEdgeExposed(progress, offset, course.length, course, section.routes, Math.hypot(1.15, .125))) continue;
           const p = circuitAtProgress(progress, offset, course.length, course, section.routes);
-          marker(wallGeometry, i % 8 === 0 ? section.accent : rail, p, 0.3);
+          marker(wallGeometry, i % 8 === 0 ? section.accent : rail, p, 0.35, progress, offset, section.routes);
           if (p.y > 5 && i % 8 === 0 && Math.hypot(p.x, p.z) > 18) box(1.1, p.y, 1.1, concrete, p.x, p.y / 2 - 0.3, p.z);
         }
       }
@@ -167,10 +194,36 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
       const mesh = new THREE.InstancedMesh(batch.geometry, batch.material, batch.matrices.length);
       batch.matrices.forEach((matrix, index) => mesh.setMatrixAt(index, matrix)); mesh.instanceMatrix.needsUpdate = true; mesh.receiveShadow = true; mesh.castShadow = true; group.add(mesh);
     }
+    const highlights: { driver: DriverId; junctionId: string; route: RouteChoice; group: THREE.Group }[] = [];
+    const arrowShape = new THREE.Shape();
+    arrowShape.moveTo(-1.2, -.45); arrowShape.lineTo(.2, -.45); arrowShape.lineTo(.2, -.95); arrowShape.lineTo(1.5, 0); arrowShape.lineTo(.2, .95); arrowShape.lineTo(.2, .45); arrowShape.lineTo(-1.2, .45); arrowShape.closePath();
+    const arrowGeometry = new THREE.ShapeGeometry(arrowShape); arrowGeometry.rotateX(-Math.PI / 2); assets.add(new THREE.Mesh(arrowGeometry, white));
     for (const junction of course.junctions ?? []) for (const choice of ["left", "right"] as const) {
-      const routes = { [junction.id]: choice }, progress = junction.start + (junction.end - junction.start) * 0.46;
-      const p = circuitPosition(progress, 1, course.length, course, routes), route = junction.routes[choice];
-      textPlane(route.name, 9, route.speedMultiplier > 1 ? "#ffd29c" : "#abf7f7", p.x, p.y + 0.1, p.z, p.heading);
+      const routes = { [junction.id]: choice }, length = junction.end - junction.start;
+      const route = junction.routes[choice];
+      for (const fraction of [.3, .7]) {
+        const progress = junction.start + length * fraction;
+        const p = circuitPosition(progress, 1, course.length, course, routes);
+        const bitmap = document.createElement("canvas"); bitmap.width = 1024; bitmap.height = 256;
+        const context = bitmap.getContext("2d")!;
+        context.textAlign = "center"; context.fillStyle = choice === "left" ? "#ffdda5" : "#c1f7f7";
+        context.font = "bold 105px sans-serif"; context.fillText(choice === "left" ? "LEFT / 左ルート" : "RIGHT / 右ルート", 512, 115);
+        context.font = "bold 68px sans-serif"; context.fillText(route.name, 512, 215);
+        const texture = new THREE.CanvasTexture(bitmap); texture.colorSpace = THREE.SRGBColorSpace;
+        const label = new THREE.Mesh(new THREE.PlaneGeometry(9, 2.25), new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 }));
+        label.geometry.rotateX(-Math.PI / 2); label.geometry.rotateY(-Math.PI / 2);
+        orient(label, p, circuitSurfaceFrame(progress, 0, course.length, course, routes)); label.position.set(p.x, p.y + .05, p.z); group.add(label);
+      }
+      for (const id of DRIVERS) {
+        const routeGroup = new THREE.Group(); group.add(routeGroup); highlights.push({ driver: id, junctionId: junction.id, route: choice, group: routeGroup });
+        const arrowMaterial = new THREE.MeshBasicMaterial({ color: COLORS[id], side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
+        for (let fraction = .08; fraction < .95; fraction += .1) {
+          const progress = junction.start + length * fraction, offset = id === "red" ? -.85 : .85;
+          const p = circuitAtProgress(progress, offset, course.length, course, routes);
+          const arrow = new THREE.Mesh(arrowGeometry, arrowMaterial);
+          orient(arrow, p, circuitSurfaceFrame(progress, offset, course.length, course, routes)); arrow.position.set(p.x, p.y + .065, p.z); routeGroup.add(arrow);
+        }
+      }
     }
     const start = circuitPosition(0, 1, course.length, course);
     const gantry = new THREE.Group(); gantry.position.set(start.x, start.y, start.z); gantry.rotation.y = -start.heading; group.add(gantry);
@@ -242,18 +295,21 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
         if (existing) gates.remove(existing.node);
         const routes = obstacle.junctionId && obstacle.route ? { [obstacle.junctionId]: obstacle.route } : {};
         const p = circuitPosition(obstacle.progress, obstacle.blockedLane, course.length, course, routes);
-        const gate = new THREE.Group(); gate.position.set(p.x, p.y + 0.05, p.z); gate.rotation.set(0, -p.heading, p.slope, "YXZ");
+        const offset = (obstacle.blockedLane - 1) * CIRCUIT_3D.laneWidth;
+        const gate = new THREE.Group();
+        const basis = orient(gate, p, circuitSurfaceFrame(obstacle.progress, offset, course.length, course, routes));
+        const lift = model ? roadModelSupport({ progress: obstacle.progress, offset, length: course.length, point: p, frame: basis, supportPoints: assetSupport.get(model) ?? [], sampleSurface: (progress, lateral) => circuitAtProgress(progress, lateral, course.length, course, routes) }) : 0;
+        gate.position.set(p.x + basis.normal.x * lift, p.y + CIRCUIT_ROAD_SURFACE + basis.normal.y * lift, p.z + basis.normal.z * lift);
         if (model) {
           const prop = model.clone(true);
-          // Authoring coordinates are shared across the manifest's props.
-          prop.rotation.y = Math.PI / 2; prop.scale.setScalar(1.55); gate.add(prop);
+          gate.add(prop);
         } else { const mesh = new THREE.Mesh(barrierGeometry, orange); mesh.position.y = 0.55; mesh.castShadow = true; gate.add(mesh); }
         gates.add(gate); obstacleNodes.set(obstacle.id, { signature: spec, node: gate, assetId: asset.id, loaded: Boolean(model) });
         if (!model && !loadingProps.has(asset.id)) {
           loadingProps.add(asset.id);
           void loadModel(asset.glbUrl).then(loaded => {
             if (disposed) return;
-            propModels.set(asset.id, loaded);
+            propModels.set(asset.id, groundAsset(loaded, 1.55, Math.PI / 2));
             // Invalidate only prop reconciliation, never the static scene.
             obstacleSignature = "";
           }).catch(() => { /* Keep the visible collision marker if a prop cannot load. */ });
@@ -267,7 +323,7 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
     assets.add(new THREE.Mesh(jetGeometry, jetMaterial));
     void Promise.all(DRIVERS.map(async id => {
       const model = await loadModel(`/models/tesla-roadster/roadster_${id === "red" ? "02_red" : "03_blue"}.glb`); if (disposed) return;
-      const car = new THREE.Group(); car.add(model); group.add(car); cars[id] = car;
+      const car = new THREE.Group(), normalized = groundAsset(model); car.add(normalized); carSupport[id] = assetSupport.get(normalized); group.add(car); cars[id] = car;
       const exhaust = new THREE.Group();
       for (const [x, z] of [[-.75, -1.15], [.75, -1.15], [-.75, 1.15], [.75, 1.15]]) {
         const jet = new THREE.Mesh(jetGeometry, jetMaterial); jet.position.set(x, -.55, z); exhaust.add(jet);
@@ -295,6 +351,10 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
       // handles controls and network snapshots, never the animation clock.
       const current = sampleRef.current?.(timestamp) ?? latest.current;
       reconcileObstacles(current.course.obstacles);
+      for (const highlight of highlights) {
+        const junction = course.junctions!.find(j => j.id === highlight.junctionId)!;
+        highlight.group.visible = selectedRoute(junction, current.players[highlight.driver]) === highlight.route;
+      }
       const now = current.now ?? current.updatedAt;
       const effects = DRIVERS.map(id => raceEffectsAt(current.players[id], now, current.phase));
       const positions = DRIVERS.map((id, index) => {
@@ -303,12 +363,19 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
       });
       DRIVERS.forEach((id, index) => {
         const p = positions[index], car = cars[id], player = current.players[id], effect = effects[index];
-        if (car) { car.position.set(p.x, p.y + 0.08 - effect.landing * 0.08, p.z); car.rotation.set(0, Math.PI - p.heading + effect.spinRadians, -p.slope, "YXZ"); }
+        if (car) {
+          const offset = (player.lane - 1) * CIRCUIT_3D.laneWidth;
+          const basis = orient(car, p, circuitSurfaceFrame(player.progress, offset, course.length, course, player.routeChoices), Math.PI + effect.spinRadians);
+          const lift = roadModelSupport({ progress: player.progress, offset, length: course.length, point: { ...p, y: p.y - effect.height }, frame: basis, supportPoints: carSupport[id] ?? [], sampleSurface: (progress, lateral) => circuitAtProgress(progress, lateral, course.length, course, player.routeChoices) });
+          car.position.set(p.x + basis.normal.x * lift, p.y + CIRCUIT_ROAD_SURFACE + basis.normal.y * lift, p.z + basis.normal.z * lift);
+        }
         const exhaust = jets[id];
         if (exhaust) { exhaust.visible = effect.airborne; exhaust.scale.y = 0.8 + Math.sin(now * 0.075) * 0.15; }
         const aura = auras[id];
         if (aura) {
-          aura.position.set(p.x, p.y - effect.height + 0.09, p.z);
+          aura.position.set(p.x, p.y - effect.height + 0.06, p.z);
+          orient(aura, p, circuitSurfaceFrame(player.progress, (player.lane - 1) * CIRCUIT_3D.laneWidth, course.length, course, player.routeChoices));
+          aura.rotateX(-Math.PI / 2);
           aura.scale.setScalar(effect.landing ? 1 + (1 - effect.landing) * 1.8 : effect.spinning ? 1.1 : 1);
           (aura.material as THREE.MeshBasicMaterial).opacity = effect.landing ? effect.landing : effect.spinning || effect.airborne || current.phase === "racing" && player.slowedUntil > now ? 0.95 : 0.45;
         }
@@ -384,6 +451,7 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
   return <div ref={stageRef} className={`race-circuit-3d${decorative ? " is-decorative" : ""}`} data-renderer="three-dimensional" data-scene-status={status} data-camera-mode={view}>
     <canvas ref={canvasRef} aria-label="赤と青のロードスターが分岐や立体交差を走る3Dレースコース" role="img" />
     <div className="circuit-3d-topline"><span><i />{race.course.layout ? COURSE_NAMES[race.course.layout] : "TOKYO CIRCUIT"} <b>3D</b></span><small>{race.course.junctions?.length ? "2 FORKS · CROSSOVER · 1 LAP" : "3 LANES · 1 LAP"}</small></div>
+    {!decorative && <div className="circuit-route-overlay"><RaceRouteStatus race={race} compact /></div>}
     {DRIVERS.map(id => <div key={id} ref={element => { labelsRef.current[id] = element; }} className={`circuit-3d-car-label is-${id}`}><i />{id === "red" ? "SCARLET" : "COBALT"}<span ref={element => { effectLabelsRef.current[id] = element; }} /></div>)}
     {status === "loading" && <div className="circuit-3d-loading" role="status"><i />3Dサーキットを準備しています</div>}
     {status === "unavailable" && <div className="circuit-3d-unavailable" role="status">3D表示を読み込めませんでした。ページを再読み込みしてください。</div>}

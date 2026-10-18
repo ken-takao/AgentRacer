@@ -16,3 +16,5 @@
 @media(max-width:700px){.circuit-3d-caption{bottom:58px;right:13px}.circuit-3d-cameras{right:12px;width:max-content;max-width:calc(100% - 24px);flex-wrap:wrap}.circuit-3d-cameras button{padding:7px 6px}}
 
 .race-circuit-3d:after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(180deg,#061b2938,transparent 22%,transparent 72%,#061b2966);z-index:1}.circuit-3d-topline,.circuit-3d-cameras,.circuit-3d-caption{z-index:2}
+.circuit-route-overlay{position:absolute;z-index:2;top:48px;left:22px;right:22px;pointer-events:none;max-width:590px}
+@media(max-width:700px){.circuit-route-overlay{top:40px;left:12px;right:12px}}
