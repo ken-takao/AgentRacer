@@ -1,0 +1,83 @@
+{
+  "image": "roadster_props_top_atlas.png",
+  "frames": {
+    "traffic_cone": {
+      "x": 0,
+      "y": 0,
+      "width": 384,
+      "height": 384
+    },
+    "water_barrier": {
+      "x": 384,
+      "y": 0,
+      "width": 384,
+      "height": 384
+    },
+    "tire_stack": {
+      "x": 768,
+      "y": 0,
+      "width": 384,
+      "height": 384
+    },
+    "chevron_sign": {
+      "x": 1152,
+      "y": 0,
+      "width": 384,
+      "height": 384
+    },
+    "speed_limit_80": {
+      "x": 0,
+      "y": 384,
+      "width": 384,
+      "height": 384
+    },
+    "speed_radar": {
+      "x": 384,
+      "y": 384,
+      "width": 384,
+      "height": 384
+    },
+    "boost_pad": {
+      "x": 768,
+      "y": 384,
+      "width": 384,
+      "height": 384
+    },
+    "banana_peel": {
+      "x": 1152,
+      "y": 384,
+      "width": 384,
+      "height": 384
+    },
+    "rainbow_oil": {
+      "x": 0,
+      "y": 768,
+      "width": 384,
+      "height": 384
+    },
+    "rubber_duck": {
+      "x": 384,
+      "y": 768,
+      "width": 384,
+      "height": 384
+    },
+    "sticky_donut": {
+      "x": 768,
+      "y": 768,
+      "width": 384,
+      "height": 384
+    },
+    "ufo_magnet": {
+      "x": 1152,
+      "y": 768,
+      "width": 384,
+      "height": 384
+    },
+    "beach_ball": {
+      "x": 0,
+      "y": 1152,
+      "width": 384,
+      "height": 384
+    }
+  }
+}
