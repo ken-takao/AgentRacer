@@ -15,6 +15,7 @@ import { RacePreparation } from "./race-preparation";
 import { RaceArrival } from "./race-arrival";
 import { isStalePreparation } from "../lib/race-launch";
 import { RaceAudio } from "./race-audio";
+import { RaceSoundProvider, RaceSoundControls } from "./race-sound";
 import { NarrationBubble, RaceNarration } from "./race-narration";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleDot, Flag, Gauge, Maximize2, Monitor, Radio, Trophy, Zap } from "lucide-react";
 const RaceCircuit3D = lazy(() => import("./race-circuit-3d").then(module => ({ default: module.RaceCircuit3D })));
@@ -397,13 +398,13 @@ export function SpectatorScreen({ id }: { id: string }) {
   if (entry === 'launch') return <div className="spectator-shell"><SiteHeader /><main className="arrival-screen"><RaceArrival previousRaceId={id} /></main></div>;
   if (entry === 'checking') return <div className="spectator-shell"><SiteHeader /><main className="spectator-main"><LoadingRace error={error} onRetry={retry} /></main></div>;
 
-  return <div className="spectator-shell"><SiteHeader live={race?.phase === "racing"} />
+  return <RaceSoundProvider key={id}><div className="spectator-shell"><SiteHeader live={race?.phase === "racing"} />
     <main className="spectator-main">{!race ? <LoadingRace error={error} onRetry={retry} /> : <>
       <div className="race-heading">
         <div><div className="eyebrow">LIVE EXPERIMENT / TOKYO CIRCUIT</div><h1>{ended ? <>The race <em>results.</em></> : race.phase === "lobby" ? <>Preparing the <em>grid.</em></> : <>The race is <em>on.</em></>}</h1></div>
         <div className="race-heading-actions">{ended && <NextRacePanel id={id} compact />}<RaceClock race={race} receivedAt={receivedAt} /></div>
       </div>
-      <div className="spectator-toolbar"><RaceAudio raceId={id} phase={race.phase} compact ducked={narratorSpeaking} />{error && <div className="connection-banner" role="status">再接続中 · 最後の状態を表示</div>}</div>
+      <div className="spectator-toolbar"><RaceAudio raceId={id} phase={race.phase} ducked={narratorSpeaking} /><RaceSoundControls />{error && <div className="connection-banner" role="status">再接続中 · 最後の状態を表示</div>}</div>
       <div className="race-dashboard">
         <section className="track-panel spectator-track" aria-label="メインの3Dレース画面">
           <div className="track-topline"><span><i className={`status-dot ${race.phase === "racing" ? "active" : ""}`} />{PHASE_LABELS[race.phase]}</span><span>3D LIVE · {race.course.length} UNITS · 3 LANES</span></div>
@@ -425,7 +426,7 @@ export function SpectatorScreen({ id }: { id: string }) {
       </div>
       <div className="spectator-note"><CircleDot size={12} /><span>Decisions APIが判断し、Computer Useが操作。右の映像は各AIが取得した実際のスクリーンショットです。</span></div>
     </>}</main>
-  </div>;
+  </div></RaceSoundProvider>;
 }
 
 export function DriverScreen({ id, player }: { id: string; player: PlayerId }) {

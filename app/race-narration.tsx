@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AudioLines, Headphones, Volume2, VolumeX } from "lucide-react";
+import { useRaceSoundChannel } from "./race-sound";
 import "./race-narration.css";
 
 import type { NarrationFeed } from "../lib/narration-feed";
@@ -9,6 +10,7 @@ export type { NarrationFeed } from "../lib/narration-feed";
 
 type Caption = NarrationFeed["captions"][number];
 type AudioState = "off" | "playing" | "blocked" | "unavailable";
+type ChannelStatus = "ready" | "playing" | "blocked" | "unavailable";
 type SourceEntry = { source: AudioBufferSourceNode; startMs: number; endMs: number };
 type Playback = {
   feed: NarrationFeed | null;
@@ -20,6 +22,9 @@ type Playback = {
   buffers: Map<number, AudioBuffer>;
   pending: boolean;
   enabled: boolean;
+  requested: boolean;
+  activation: number;
+  audioStatus: ChannelStatus | null;
   mediaStarted: boolean;
   buffering: boolean;
   disposed: boolean;
@@ -97,7 +102,7 @@ function terminalReplayStart(feed: NarrationFeed) {
   return Math.max(earliest, latest ? latest.startMs - 150 : mediaEdge(feed) - 4000);
 }
 function emptyPlayback(): Playback {
-  return { feed: null, clock: null, context: null, gain: null, sources: new Map(), scheduled: new Set(), buffers: new Map(), pending: false, enabled: false, mediaStarted: false, buffering: false, disposed: false, revision: 0 };
+  return { feed: null, clock: null, context: null, gain: null, sources: new Map(), scheduled: new Set(), buffers: new Map(), pending: false, enabled: false, requested: false, activation: 0, audioStatus: null, mediaStarted: false, buffering: false, disposed: false, revision: 0 };
 }
 
 /** A single race-wide audio feed; this component never opens an AI session. */
@@ -105,16 +110,22 @@ export function RaceNarration(props: { raceId: string; onSpeakingChange?: (speak
   return <RaceNarrationSession key={props.raceId} {...props} />;
 }
 function RaceNarrationSession({ raceId, onSpeakingChange }: { raceId: string; onSpeakingChange?: (speaking: boolean) => void }) {
+  const { register, reportStatus } = useRaceSoundChannel("narration");
   const playbackRef = useRef<Playback | null>(null);
   const speakingCallback = useRef(onSpeakingChange);
   useEffect(() => { speakingCallback.current = onSpeakingChange; }, [onSpeakingChange]);
   const volumeRef = useRef(.9);
-  const [volume, setVolume] = useState(90);
   const [audioState, setAudioState] = useState<AudioState>("off");
   const [feedStatus, setFeedStatus] = useState<NarrationFeed["status"] | "missing">("connecting");
   const [caption, setCaption] = useState<Caption | null>(null);
   const [speaking, setSpeaking] = useState(false);
   const [connectionError, setConnectionError] = useState(false);
+  const updateAudioStatus = useCallback((playback: Playback, status: ChannelStatus) => {
+    if (playback.disposed || playbackRef.current !== playback || playback.audioStatus === status) return;
+    playback.audioStatus = status;
+    setAudioState(status === "ready" ? "off" : status);
+    reportStatus(status);
+  }, [reportStatus]);
 
   useEffect(() => {
     const playback = emptyPlayback();
@@ -237,7 +248,7 @@ function RaceNarrationSession({ raceId, onSpeakingChange }: { raceId: string; on
       if (playback.enabled && playback.context?.state === "suspended") {
         playback.enabled = false;
         stopSources(playback);
-        setAudioState("blocked");
+        updateAudioStatus(playback, "blocked");
       }
       if (playback.buffering && (!playback.enabled || (playback.feed && publishedAudioEdge(playback.feed) <= (playback.clock?.cursor ?? 0)))) resumeBufferedPlayback();
       let cursor = cursorNow(playback);
@@ -250,19 +261,15 @@ function RaceNarrationSession({ raceId, onSpeakingChange }: { raceId: string; on
         playback.buffering = true;
         playback.clock = { cursor, at: performance.now() };
       }
-      if (playback.enabled && playback.feed && (playback.feed.status === "ended" || playback.feed.status === "error")
-        && cursor >= mediaEdge(playback.feed) + 100 && playback.sources.size === 0) {
-        // Make the next click a replay, and never keep BGM ducked after completion.
-        playback.enabled = false;
-        if (playback.gain) playback.gain.gain.value = 0;
-        setAudioState("off");
-      }
       const nextCaption = chooseCaption(playback.feed, cursor);
       const key = nextCaption ? `${nextCaption.id}:${nextCaption.text}` : "";
       if (key !== captionKey) { captionKey = key; setCaption(nextCaption); }
-      const voicePlaying = playback.enabled && playback.context?.state === "running" && volumeRef.current > 0
-        && Boolean(nextCaption && cursor <= nextCaption.endMs)
+      const audioPlaying = playback.enabled && playback.context?.state === "running" && volumeRef.current > 0
         && [...playback.sources.values()].some(source => source.startMs <= cursor && cursor < source.endMs);
+      const voicePlaying = audioPlaying && Boolean(nextCaption && cursor <= nextCaption.endMs);
+      // An empty/finished feed is idle, not muted. Keep the user's ON preference
+      // without rewinding the timeline or starting a replay after completion.
+      if (playback.enabled) updateAudioStatus(playback, audioPlaying ? "playing" : "ready");
       if (voicePlaying !== lastSpeaking) {
         lastSpeaking = voicePlaying;
         setSpeaking(voicePlaying);
@@ -286,61 +293,87 @@ function RaceNarrationSession({ raceId, onSpeakingChange }: { raceId: string; on
     return () => {
       playback.disposed = true;
       playback.revision++;
+      playback.activation++;
       abort.abort();
       clearTimeout(pollTimer);
       clearInterval(tickTimer);
       document.removeEventListener("visibilitychange", resumeVisible);
       stopSources(playback);
+      if (playback.context) playback.context.onstatechange = null;
       void playback.context?.close();
       playback.buffers.clear();
       speakingCallback.current?.(false);
       if (playbackRef.current === playback) playbackRef.current = null;
     };
-  }, [raceId]);
+  }, [raceId, updateAudioStatus]);
 
-  const toggleAudio = useCallback(async () => {
+  const setAudioEnabled = useCallback((enabled: boolean) => {
     const playback = playbackRef.current;
     if (!playback || playback.disposed) return;
-    if (playback.enabled) {
+    const wasRequested = playback.requested;
+    playback.requested = enabled;
+    const activation = ++playback.activation;
+    if (!enabled) {
       playback.enabled = false;
       if (playback.gain) playback.gain.gain.value = 0;
       stopSources(playback);
-      setAudioState("off");
+      updateAudioStatus(playback, "ready");
+      setSpeaking(false);
+      speakingCallback.current?.(false);
       return;
     }
     try {
       const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (!AudioContextClass) { setAudioState("unavailable"); return; }
+      if (!AudioContextClass) { updateAudioStatus(playback, "unavailable"); return; }
       if (!playback.context) {
         playback.context = new AudioContextClass();
         playback.gain = playback.context.createGain();
+        playback.gain.gain.value = 0;
         playback.gain.connect(playback.context.destination);
       }
-      // resume() is invoked within the button gesture, never by the polling loop.
-      await playback.context.resume();
-      if (playback.disposed) return;
-      if (playback.context.state !== "running") { setAudioState("blocked"); return; }
       const feed = playback.feed;
-      if (feed && (feed.status === "ended" || feed.status === "error") && cursorNow(playback) >= mediaEdge(feed) - 350) {
-        const replayStart = terminalReplayStart(feed);
-        if (replayStart === null) { setAudioState("unavailable"); return; }
-        stopSources(playback);
-        playback.buffering = false;
-        // Give retained chunks the same download buffer as a live connection.
-        playback.clock = { cursor: replayStart, at: performance.now() + PLAYBACK_DELAY_MS };
-      }
-      playback.enabled = true;
-      playback.gain!.gain.value = volumeRef.current;
-      setAudioState("playing");
-    } catch { if (!playback.disposed) setAudioState("blocked"); }
-  }, []);
+      // Only an explicit OFF -> ON transition can replay completed audio.
+      // Automatic completion and retrying a blocked context never rewind it.
+      let replayStart = !wasRequested && feed && (feed.status === "ended" || feed.status === "error")
+        && cursorNow(playback) >= mediaEdge(feed) - 350 ? terminalReplayStart(feed) : null;
+      const current = () => !playback.disposed && playbackRef.current === playback && playback.requested && playback.activation === activation;
+      const activate = () => {
+        if (!current()) return;
+        if (playback.context?.state !== "running") {
+          playback.enabled = false;
+          stopSources(playback);
+          updateAudioStatus(playback, "blocked");
+          return;
+        }
+        if (playback.enabled) return;
+        if (replayStart !== null) {
+          stopSources(playback);
+          playback.buffering = false;
+          playback.clock = { cursor: replayStart, at: performance.now() + PLAYBACK_DELAY_MS };
+          replayStart = null;
+        }
+        playback.enabled = true;
+        playback.gain!.gain.value = volumeRef.current;
+        updateAudioStatus(playback, "ready");
+      };
+      playback.context.onstatechange = activate;
+      // Default-on attempts happen at mount. A toolbar gesture calls resume()
+      // synchronously again for browsers requiring user activation. Such browsers
+      // may leave its promise pending, so report the suspended state immediately.
+      const resumed = playback.context.resume();
+      activate();
+      void resumed.then(activate).catch(() => {
+        if (current()) updateAudioStatus(playback, "blocked");
+      });
+    } catch { updateAudioStatus(playback, "unavailable"); }
+  }, [updateAudioStatus]);
 
   const changeVolume = useCallback((value: number) => {
-    setVolume(value);
     volumeRef.current = value / 100;
     const playback = playbackRef.current;
     if (playback?.gain && playback.context) playback.gain.gain.setTargetAtTime(playback.enabled ? value / 100 : 0, playback.context.currentTime, .03);
   }, []);
+  useEffect(() => register({ setEnabled: setAudioEnabled, setVolume: changeVolume }), [register, setAudioEnabled, changeVolume]);
   const statusText = connectionError ? "実況に再接続中 · レースは続いています"
     : feedStatus === "missing" ? "このレースには実況音声がありません"
     : feedStatus === "error" ? "実況は一時停止中 · レースは続いています"
@@ -348,14 +381,13 @@ function RaceNarrationSession({ raceId, onSpeakingChange }: { raceId: string; on
     : feedStatus === "connecting" ? "実況ブースに接続しています"
     : "2台の走りを、ここから生実況。";
   return <NarrationBubble text={caption?.text || ""} active={Boolean(caption)} speaking={speaking}
-    status={statusText} live={feedStatus === "live"} replay={feedStatus === "ended" || feedStatus === "error"} audioState={audioState} volume={volume}
-    onToggleAudio={toggleAudio} onVolumeChange={changeVolume} />;
+    status={statusText} live={feedStatus === "live"} audioState={audioState} hideAudioControls />;
 }
 
 /** Presentational export also used for deterministic visual previews without an API call. */
-export function NarrationBubble({ text, active = false, speaking = false, status = "2台の走りを、ここから生実況。", live = false, audioState = "off", volume = 90, onToggleAudio, onVolumeChange, preview = false, recorded = false, replay = false }: {
+export function NarrationBubble({ text, active = false, speaking = false, status = "2台の走りを、ここから生実況。", live = false, audioState = "off", volume = 90, onToggleAudio, onVolumeChange, preview = false, recorded = false, replay = false, hideAudioControls = false }: {
   text: string; active?: boolean; speaking?: boolean; status?: string; live?: boolean;
-  audioState?: AudioState; volume?: number; preview?: boolean; recorded?: boolean; replay?: boolean; onToggleAudio?: () => void; onVolumeChange?: (value: number) => void;
+  audioState?: AudioState; volume?: number; preview?: boolean; recorded?: boolean; replay?: boolean; hideAudioControls?: boolean; onToggleAudio?: () => void; onVolumeChange?: (value: number) => void;
 }) {
   const [imageFailed, setImageFailed] = useState(false);
   const exciting = active && /ゴール|接触|逆転|抜|クラッシュ|スタート|並ん|追い/.test(text);
@@ -370,12 +402,12 @@ export function NarrationBubble({ text, active = false, speaking = false, status
     <div className="narration-content">
       <div className="narration-topline">
         <div className="narrator-identity"><b>ピット・ハヤテ</b><span className={`narration-live ${live ? "is-live" : ""}`}><i />AI実況</span><span className="narration-engine">GPT-LIVE</span></div>
-        <div className="narration-controls">
+        {!hideAudioControls && <div className="narration-controls">
           <button type="button" disabled={preview} onClick={onToggleAudio} aria-pressed={audioOn} title="実況音声のオン・オフ。字幕は常に表示されます。">
             {audioOn ? <Volume2 size={14} /> : <VolumeX size={14} />}<span>{preview ? "表示サンプル" : audioOn ? "実況 ON" : audioState === "blocked" ? "音声を再開" : replay ? "最後の実況を聴く" : "実況を聴く"}</span>
           </button>
           {!preview && <label className="narration-volume"><span className="sr-only">実況の音量</span><input type="range" min="0" max="100" step="5" value={volume} aria-label="実況の音量" aria-valuetext={`${volume}%`} onChange={event => onVolumeChange?.(Number(event.currentTarget.value))} /></label>}
-        </div>
+        </div>}
       </div>
       <div className="narration-bubble" role="status" aria-live="polite" aria-atomic="true">
         <span className="narration-quote" aria-hidden="true">“</span>
