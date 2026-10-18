@@ -49,11 +49,14 @@ export function cameraPose(shot: CameraShot, anchors: CameraAnchor[], aspect: nu
   }
   const p = shot.focus === 1 ? b : a;
   const dx = Math.cos(p.heading), dz = Math.sin(p.heading);
-  const speedFov = moving ? Math.min(7, Math.max(0, p.speed) * 2) : 0;
+  // Bring the road markings into the foreground without advancing the race
+  // clock. The lens responds only to the authoritative car speed, so a spin
+  // or stop also loses its speed effect.
+  const speedFov = moving ? Math.min(9, Math.max(0, p.speed) * 3) : 0;
   if (shot.kind === "chase") {
     const side = 2.7 + Math.sin(t * 0.25) * 0.35;
-    return { eye: [p.x - dx * 11.5 * portrait + dz * side, p.y + 5.2 * portrait, p.z - dz * 11.5 * portrait - dx * side], target: [p.x + dx * 4.2, p.y + 1.05 + Math.sin(p.slope) * 4.2, p.z + dz * 4.2], fov: 59 + speedFov };
+    return { eye: [p.x - dx * 9.8 * portrait + dz * side, p.y + 3.6 * portrait, p.z - dz * 9.8 * portrait - dx * side], target: [p.x + dx * 4.2, p.y + 1.05 + Math.sin(p.slope) * 4.2, p.z + dz * 4.2], fov: 59 + speedFov };
   }
   const front = 1.5 + Math.sin(t * 0.24) * 1.0;
-  return { eye: [p.x + dx * front + dz * 13 * portrait, p.y + 4.8 * portrait, p.z + dz * front - dx * 13 * portrait], target: [p.x + dx * 2.1, p.y + 1, p.z + dz * 2.1], fov: 58 + speedFov };
+  return { eye: [p.x + dx * front + dz * 10.2 * portrait, p.y + 3.6 * portrait, p.z + dz * front - dx * 10.2 * portrait], target: [p.x + dx * 2.1, p.y + 1, p.z + dz * 2.1], fov: 58 + speedFov };
 }
