@@ -112,8 +112,9 @@ async function handle(request:Request,context:{params:Promise<{path?:string[]}>}
  if(path.length===0){
   await requireAdmin(request);const input=await body(request);const now=Date.now();const id='race_'+crypto.randomUUID().replaceAll('-','');
   if(input.pace!==undefined&&input.pace!=='sprint-2x')throw new HttpError('Unknown race pace');
+  if(input.carInteraction!==undefined&&input.carInteraction!=='ghost'&&input.carInteraction!=='solid')throw new HttpError('Unknown car interaction');
   const token=()=>Array.from(crypto.getRandomValues(new Uint8Array(32))).map(b=>b.toString(16).padStart(2,'0')).join('');const red=token(),blue=token();
-  const state=createRace(String(input.seed||id).slice(0,100),now,{pace:input.pace});
+  const state=createRace(String(input.seed||id).slice(0,100),now,{pace:input.pace,carInteraction:input.carInteraction});
   await db().batch([
    db().prepare('INSERT INTO races (id,created_at,expires_at,version,state,red_hash,blue_hash) VALUES (?,?,?,?,?,?,?)').bind(id,now,now+30*60*1000,0,JSON.stringify(state),await hash(red),await hash(blue)),
    db().prepare('INSERT INTO race_telemetry (id,race_id,player,status,actions) VALUES (?,?,?,?,?)').bind(id+'red',id,'red','接続待ち',0),

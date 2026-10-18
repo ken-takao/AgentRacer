@@ -13,6 +13,14 @@ const state = overrides => ({ version: 2, phase: 'racing', updatedAt: 10000, cou
   players: { red: driver(), blue: driver({ progress: 25, lane: 2, targetLane: 2 }) }, ...overrides });
 const observe = s => createDriveObservation({ state: s, color: 'red', observedAt: 9900 });
 
+test('interaction rules come from saved state; missing or legacy modes keep solid decisions', () => {
+  assert.equal(observe(state()).carInteraction, 'solid');
+  assert.equal(observe(state({ carInteraction: 'ghost' })).carInteraction, 'ghost');
+  assert.equal(observe(state({ version: 1, carInteraction: 'ghost' })).carInteraction, 'solid');
+  const invalid = { ...observe(state()), carInteraction: 'unknown' };
+  assert.throws(() => sanitizeDriveObservation(invalid), error => error.code === 'invalid_observation');
+});
+
 test('only driver-visible obstacles and fixed allowlisted fields reach the observation', () => {
   const s = state(); const j = s.course.junctions[0];
   s.players.red.routeChoices[j.id] = 'left';

@@ -7,7 +7,7 @@ import { placementView } from "../operator/obstacles.mjs";
 const IDS = ["red", "blue"] as const;
 const near = (actual: number, expected: number, tolerance = 0.00001) => assert.ok(Math.abs(actual - expected) < tolerance, `${actual} != ${expected}`);
 function running(pace?: RacePace, mode: SpeedMode = "normal", epoch = 0): RaceState {
-  let state = createRace("pace-test", epoch, { pace });
+  let state = createRace("pace-test", epoch, { pace, carInteraction: "solid" });
   state.course.obstacles = [];
   state.course.junctions = [];
   for (const id of IDS) {

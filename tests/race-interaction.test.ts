@@ -9,7 +9,7 @@ import type { CourseJunction } from "../lib/race-course.ts";
 const near = (a: number, b: number, tolerance = 0.000002) => assert.ok(Math.abs(a - b) < tolerance, `${a} must equal ${b}`);
 const IDS = ["red", "blue"] as const;
 function running(epoch = 0): RaceState {
-  let state = createRace("interactions", epoch);
+  let state = createRace("interactions", epoch, { carInteraction: "solid" });
   state.course.obstacles = [];
   state.course.junctions = [];
   for (const id of IDS) {

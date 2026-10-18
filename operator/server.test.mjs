@@ -29,6 +29,7 @@ async function telemetryFixture(mode) {
   }]));
   const history = [];
   const snapshot = () => ({ state: { phase, version: 2, updatedAt: ++stateClock, winner: phase === 'finished' ? 'red' : null,
+    ...(mode === 'ghost' ? { carInteraction: 'ghost' } : {}),
     players: structuredClone(players), history: structuredClone(history), course: { length: 200, junctions: [], obstacles: [] } } });
   const config = { key: 'telemetry-fixture-openai', admin: 'telemetry-fixture-admin', origin: 'https://game.invalid', drivingMode: 'telemetry', narrationEnabled: false };
   globalThis.fetch = async (url, init = {}) => {
@@ -57,11 +58,15 @@ async function telemetryFixture(mode) {
       const body = JSON.parse(init.body);
       assert.ok(body.input[0].content.every(item => item.type === 'input_text'));
       const observation = JSON.parse(body.input[0].content[0].text.split('DRIVER_OBSERVATION_JSON\n')[1]);
+      if (mode === 'ghost') {
+        assert.equal(body.questions.length, 2);
+        assert.ok(!('rival' in observation));
+      }
       const action = observation.driver.targetLane === 0 ? 'wait' : 'lane_left';
       return json({ answers: [
         { type: 'choice', name: 'action', choice: action, confidence: 0.9 },
         { type: 'predicate', name: 'obstacle_risk', probability: 0.8 },
-        { type: 'predicate', name: 'rival_risk', probability: 0.2 },
+        ...(mode === 'ghost' ? [] : [{ type: 'predicate', name: 'rival_risk', probability: 0.2 }]),
       ] });
     }
     assert.equal(init.headers['OpenAI-Beta'], 'agents=v1');
@@ -171,6 +176,21 @@ test('telemetry stop aborts revalidation immediately and cannot submit a late dr
     assert.equal(f.stats.drivingMessages, 0);
     assert.equal(f.deleted.size, 2);
     assert.equal(f.stats.stopRequests, 1);
+  } finally { await f.dispose(); }
+});
+
+test('ghost telemetry still executes and acknowledges both drivers with no rival-risk question', async () => {
+  const f = await telemetryFixture('ghost');
+  try {
+    await f.post('/api/start');
+    const state = await f.waitFor(state => state.canStart);
+    assert.equal(state.stage, 'completed', state.error);
+    assert.equal(f.stats.drivingMessages, 2);
+    for (const color of ['red', 'blue']) {
+      assert.equal(state.players[color].lastDecision.rivalRisk, null);
+      assert.equal(state.players[color].drivingInputs, 1);
+    }
+    assert.equal(f.deleted.size, 2);
   } finally { await f.dispose(); }
 });
 

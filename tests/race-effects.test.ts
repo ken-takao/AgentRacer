@@ -7,7 +7,7 @@ import { OBSTACLE_ASSETS, getObstacleAsset } from "../lib/obstacle-catalog.ts";
 const IDS = ["red", "blue"] as const;
 const near = (actual: number, expected: number, tolerance = 0.00001) => assert.ok(Math.abs(actual - expected) < tolerance, `${actual} != ${expected}`);
 function running(epoch = 0): RaceState {
-  let state = createRace("jump-effects", epoch);
+  let state = createRace("jump-effects", epoch, { carInteraction: "solid" });
   state.course.obstacles = [];
   state.course.junctions = [];
   for (const id of IDS) {

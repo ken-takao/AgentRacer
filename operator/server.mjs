@@ -283,7 +283,12 @@ async function handleDecision(run, color, action) {
     p.usedFrameId = frame.id;
     p.status = 'Decisions APIで判断中';
     try {
-      const decision = await decideDrive({ key: run.config.key, color, frame, signal: p.streamController.signal });
+      if (!run.finalState) {
+        const snapshot = await (await game(run, `/api/races/${run.raceId}`, { signal: p.streamController.signal })).json();
+        observeState(run, snapshot.state);
+      }
+      const carInteraction = run.finalState?.version === 2 && run.finalState.carInteraction === 'ghost' ? 'ghost' : 'solid';
+      const decision = await decideDrive({ key: run.config.key, color, frame, carInteraction, signal: p.streamController.signal });
       if (run.stopping || run.stopRequested || sessionId !== p.sessionId) return;
       if (TERMINAL_PHASES.has(run.gamePhase)) {
         outcome = { success: true, output: JSON.stringify({ action: 'wait', instruction: 'The race has ended. Do not drive.' }) };
@@ -408,7 +413,7 @@ async function startPlayer(run, color, playerURL) {
   }
   await sendInput(run, p, `You execute the ${color.toUpperCase()} car's visible controls in a real-time two-player race. Open this exact URL using computer_use: ${playerURL}
 The fragment is your private capability: use the exact URL, never share it or access the other player. Click READY once, then stay active through waiting and countdown. Drive until FINISHED or CANCELLED (up to 180 seconds after countdown).
-Driving loop, strictly in this order: (1) take a fresh computer_use screenshot; (2) call decide_drive({}); (3) execute ONLY its single returned instruction using normal visible computer_use; (4) repeat with a fresh screenshot. Decisions API sees your same screenshot and is responsible for all obstacle, rival, lane, speed, route and JUMP decisions. You are only the UI executor. Never choose a lane, speed, route or JUMP yourself. Do not anticipate additional controls, batch unapproved driving actions, or reuse a decision on later screenshots. For a wait result, wait briefly and capture again. If the tool fails or the instructed control is unavailable, capture a new screenshot and ask decide_drive again. Execute the returned instruction promptly, without pausing or additional deliberation. The game moves while tools run.
+Driving loop, strictly in this order: (1) take a fresh computer_use screenshot; (2) call decide_drive({}); (3) execute ONLY its single returned instruction using normal visible computer_use; (4) repeat with a fresh screenshot. Decisions API sees your same screenshot and is responsible for all driving decisions under the current race rules. In GHOST races other cars pass through without collision or slowing; course obstacles still apply. You are only the UI executor. Never choose a lane, speed, route or JUMP yourself. Do not anticipate additional controls, batch unapproved driving actions, or reuse a decision on later screenshots. For a wait result, wait briefly and capture again. If the tool fails or the instructed control is unavailable, capture a new screenshot and ask decide_drive again. Execute the returned instruction promptly, without pausing or additional deliberation. The game moves while tools run.
 Do not stop after READY, one action or countdown. Produce screenshots throughout play. Use only computer_use plus decide_drive. Never use DOM, JavaScript, network requests, storage, developer tools, terminal, source code, or the opponent's controls. Do not sign in or leave the game. Report a genuine blockage clearly.`);
   p.status = 'driving';
   log(run, 'ブラウザーへ運転を依頼しました。', color);

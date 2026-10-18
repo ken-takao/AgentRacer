@@ -127,6 +127,45 @@ const textObservation = (phase = 'racing') => createDriveObservation({ color: 'r
 } });
 const textInput = observation => ({ key: input.key, color: 'red', observation, now: () => 10000 });
 
+const ghostAnswers = action => ({ answers: answers(action).answers.filter(answer => answer.name !== 'rival_risk') });
+
+test('ghost text decisions exclude the opponent and its risk question, preserving course obstacles', async () => {
+  const observation = { ...textObservation(), carInteraction: 'ghost' };
+  const result = await decideDrive({ ...textInput(observation), fetchImpl: async (_, init) => {
+    const body = JSON.parse(init.body), prompt = body.input[0].content[0].text;
+    assert.deepEqual(body.questions.map(question => question.name), ['action', 'obstacle_risk']);
+    const payload = JSON.parse(prompt.split('DRIVER_OBSERVATION_JSON\n')[1]);
+    assert.ok(!('rival' in payload));
+    assert.equal(payload.carInteraction, 'ghost');
+    assert.equal(payload.obstacles[0].kind, 'banana');
+    assert.equal(payload.obstacles[0].distance, 20);
+    assert.match(prompt, /without blocking, impact or slowdown/);
+    return response(ghostAnswers('lane_right'));
+  } });
+  assert.equal(result.rivalRisk, null, 'unasked risk is not a fabricated model probability');
+  assert.equal(result.obstacleRisk, .8);
+});
+
+test('ghost visual decisions use server rules, keep the real screenshot, and require exactly two answers', async () => {
+  const result = await decideDrive({ ...input, carInteraction: 'ghost', fetchImpl: async (_, init) => {
+    const body = JSON.parse(init.body);
+    assert.deepEqual(body.input[0].content[1], { type: 'input_image', image_url: frame.imageUrl });
+    assert.equal(body.questions.length, 2);
+    return response(ghostAnswers('speed_turbo'));
+  } });
+  assert.equal(result.rivalRisk, null);
+  for (const body of [answers(), { answers: [ghostAnswers().answers[0]] }, { answers: [
+    { type: 'choice', name: 'action', choice: 'lane_left', confidence: .9 },
+    { type: 'predicate', name: 'rival_risk', probability: .2 },
+  ] }]) await assert.rejects(decideDrive({ ...input, carInteraction: 'ghost', fetchImpl: async () => response(body) }), failsWith('invalid_response'));
+});
+
+test('invalid or conflicting interaction modes never reach the Decisions API', async () => {
+  const fetchImpl = () => assert.fail('must not send');
+  await assert.rejects(decideDrive({ ...input, carInteraction: 'unknown', fetchImpl }), failsWith('invalid_observation'));
+  await assert.rejects(decideDrive({ ...textInput(textObservation()), carInteraction: 'ghost', fetchImpl }), failsWith('invalid_observation'));
+});
+
 test('text mode retains the same model and ten actions while sending only a sanitized driver observation', async () => {
   let clock = 10000;
   const observation = textObservation('countdown'); observation.token = 'private-secret'; observation.driver.secret = 'private-secret';

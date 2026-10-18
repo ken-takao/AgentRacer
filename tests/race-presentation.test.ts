@@ -104,3 +104,20 @@ for (const elapsed of [0, 100, 400, 600, 800, 1000]) {
     "the complete piecewise interval is rejected if a follower would pass through a stopped car");
 }
 console.log("Race effects: short jump replay, exact landing, stationary spin and post-spin resumption passed");
+
+// Ghost cars may share the same road/lane, so their overtake must not trigger
+// the solid-car contact snap. Obstacles still use the same stopped timeline.
+const ghostBefore = { ...before, now: 1000, version: 2, carInteraction: "ghost" as const, players: { red: { progress: 10, lane: 0 }, blue: { progress: 10.5, lane: 0 } } };
+const ghostAfter = { ...ghostBefore, updatedAt: 1500, players: { red: { progress: 11.5, lane: 0 }, blue: { progress: 11, lane: 0 } } };
+const ghostMiddle = interpolateRace(ghostBefore, ghostAfter, 250);
+assert.equal(ghostMiddle.players.red.progress, 10.75);
+assert.equal(ghostMiddle.players.blue.progress, 10.75, "ghost overtake remains smooth even at full overlap");
+assert.equal(ghostMiddle.now, 1250);
+assert.equal(interpolateRace({ ...ghostBefore, carInteraction: "solid" }, { ...ghostAfter, carInteraction: "solid" }, 250).players.red.progress, 11.5, "explicit solid mode keeps contact protection");
+const stoppedGhostBefore = { ...followerBefore, carInteraction: "ghost" as const };
+const stoppedGhostAfter = { ...followerAfter, carInteraction: "ghost" as const };
+const stoppedGhost = interpolateRace(stoppedGhostBefore, stoppedGhostAfter, 400);
+assert.equal(stoppedGhost.players.red.progress, 10.25, "ghost mode retains the banana's exact stopped position");
+assert.equal(stoppedGhost.players.red.lane, 0);
+assert.ok(stoppedGhost.players.blue.progress > followerBefore.players.blue.progress && stoppedGhost.players.blue.progress < followerAfter.players.blue.progress, "passing a stopped ghost also stays interpolated");
+console.log("Ghost presentation: smooth overlaps and banana stops passed");

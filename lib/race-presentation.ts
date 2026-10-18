@@ -3,7 +3,7 @@ import { activeJunction, selectedRoute, type CourseFeatures, type RouteChoice } 
 import type { RaceEffectState } from "./race-effects.ts";
 type Snapshot = {
   phase: string; createdAt: number; updatedAt: number; now?: number;
-  version?: number; course?: CourseFeatures;
+  version?: number; carInteraction?: "solid" | "ghost"; course?: CourseFeatures;
   players: Record<"red" | "blue", { progress: number; lane: number; routeChoices?: Record<string, RouteChoice> } & RaceEffectState>;
 };
 
@@ -91,8 +91,9 @@ function interpolationCrossesContact(previous: Snapshot, current: Snapshot) {
 export function interpolateRace<T extends Snapshot>(previous: T | undefined, current: T, elapsedMs: number): T {
   if (!previous || current.phase !== "racing" || previous.phase !== "racing" || previous.createdAt !== current.createdAt || current.updatedAt <= previous.updatedAt) return current;
   // Check the entire interval so a frame never jumps forward and then back.
-  // Split/merge transitions stay conservative; stable separate branches can interpolate.
-  if (current.version === 2 && interpolationCrossesContact(previous, current)) return current;
+  // Solid-car split/merge transitions stay conservative; ghost cars can pass
+  // through one another and must keep interpolating smoothly during an overtake.
+  if (current.version === 2 && current.carInteraction !== "ghost" && interpolationCrossesContact(previous, current)) return current;
   const duration = Math.max(1, Math.min(1000, current.updatedAt - previous.updatedAt));
   const t = Math.min(1, Math.max(0, Number.isFinite(elapsedMs) ? elapsedMs / duration : 0));
   const now = previous.updatedAt + (current.updatedAt - previous.updatedAt) * t;

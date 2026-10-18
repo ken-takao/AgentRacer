@@ -84,3 +84,36 @@ test("driver inputs cannot change an existing race's pace", async () => {
     assert.equal(response.data.state.paceRules.speedMultiplier, requested ? 2 : 1);
   }
 });
+
+test("new admin-created races persist ghost by default and allow explicit solid rules", async () => {
+  const h = await harness();
+  for (const requested of [undefined, "ghost", "solid"] as const) {
+    const created = await h.post({ carInteraction: requested });
+    assert.equal(created.status, 201);
+    assert.equal(h.state(created.data.id).carInteraction, requested ?? "ghost");
+    assert.equal(h.state(created.data.id).pace, undefined);
+  }
+  const before = h.rows.size;
+  for (const carInteraction of [null, true, "off", {}, ["ghost"]]) {
+    assert.equal((await h.post({ carInteraction })).status, 400);
+  }
+  assert.equal(h.rows.size, before, "invalid rules cannot create any race");
+});
+
+test("driver inputs cannot change saved car interactions; legacy missing fields remain missing", async () => {
+  const h = await harness();
+  for (const requested of [undefined, "ghost", "solid"] as const) {
+    const created = await h.post({ carInteraction: requested });
+    const id = created.data.id, driverToken = new URL(created.data.playerUrls.red).hash.slice(1);
+    if (requested === undefined) {
+      const legacy = h.state(id); delete legacy.carInteraction;
+      h.rows.get(id)!.state = JSON.stringify(legacy);
+    }
+    const change = requested === "ghost" ? "solid" : "ghost";
+    const response = await h.post({ player: "red", input: { type: "join", carInteraction: change }, carInteraction: change }, driverToken, [id, "input"]);
+    assert.equal(response.status, 200);
+    assert.equal(h.state(id).carInteraction, requested);
+    assert.equal(response.data.state.carInteraction, requested ?? "solid");
+    assert.equal((await h.post({ carInteraction: "ghost" }, driverToken)).status, 401);
+  }
+});

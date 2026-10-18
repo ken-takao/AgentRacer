@@ -75,6 +75,7 @@ export function createDriveObservation({ state, color, observedAt }) {
     ...(ASSETS.has(obstacle.assetId) ? { asset: obstacle.assetId } : {}),
   }));
   return sanitizeDriveObservation({ schema: 'driver-observation-v1', color, observedAt, stateAt: state.updatedAt, phase: state.phase,
+    carInteraction: state.version === 2 && state.carInteraction === 'ghost' ? 'ghost' : 'solid',
     course: { length: course.length, visibleDistance },
     driver: { progress: mine.progress, lane: mine.lane, targetLane: mine.targetLane, speedMode: mine.speedMode, speed: mine.speed,
       joined: mine.joined === true, ready: mine.ready === true,
@@ -91,6 +92,7 @@ export function createDriveObservation({ state, color, observedAt }) {
 export function sanitizeDriveObservation(value) {
   requireThat(value && value.schema === 'driver-observation-v1' && ['red', 'blue'].includes(value.color)
     && finite(value.observedAt) && value.observedAt >= 0 && finite(value.stateAt) && PHASES.includes(value.phase));
+  requireThat(value.carInteraction === undefined || ['solid', 'ghost'].includes(value.carInteraction));
   const { driver: d, course: c, rival: r, road, route } = value;
   requireThat(c && finite(c.length) && c.length > 0 && [DRIVER_VISIBLE_DISTANCE, SPRINT_VISIBLE_DISTANCE].includes(c.visibleDistance));
   requireThat(d && finite(d.progress) && finite(d.lane) && d.lane >= 0 && d.lane <= 2 && lane(d.targetLane)
@@ -122,6 +124,7 @@ export function sanitizeDriveObservation(value) {
       distanceToEntry: route.distanceToEntry, distanceToExit: route.distanceToExit, routes };
   }
   return { schema: 'driver-observation-v1', color: value.color, observedAt: value.observedAt, stateAt: value.stateAt, phase: value.phase,
+    carInteraction: value.carInteraction ?? 'solid',
     course: { length: c.length, visibleDistance: c.visibleDistance },
     driver: { progress: d.progress, lane: d.lane, targetLane: d.targetLane, speedMode: d.speedMode, speed: d.speed,
       joined: d.joined, ready: d.ready, jumpAvailable: d.jumpAvailable, jumpRemainingMs: d.jumpRemainingMs,

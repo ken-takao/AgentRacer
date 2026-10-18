@@ -12,7 +12,7 @@ import "./race-tactics.css";
 
 type Id = "red" | "blue";
 type Driver = RaceEffectState & { progress: number; lane: number; targetLane: number; speed: number; routeChoices?: Record<string, RouteChoice>; carCollisions?: number; lastCarCollisionAt?: number; upcomingObstacles: { id: string; progress: number; blockedLane: number; assetId?: string }[] };
-export type TacticalRace = { paceRules?: { visibleDistance: number }; phase: string; updatedAt: number; now?: number; course: CourseFeatures & { length: number }; players: Record<Id, Driver> };
+export type TacticalRace = { carInteraction?: "solid" | "ghost"; paceRules?: { visibleDistance: number }; phase: string; updatedAt: number; now?: number; course: CourseFeatures & { length: number }; players: Record<Id, Driver> };
 const names = { red: "SCARLET", blue: "COBALT" };
 const colors = { red: "#ff625b", blue: "#68a4ff" };
 
@@ -73,13 +73,14 @@ export function RivalRadar({ race, player }: { race: TacticalRace; player: Id })
   const mine = race.players[player], rival = race.players[other];
   const gap = rival.progress - mine.progress;
   const sameRoad = roadKey(race.course, mine) === roadKey(race.course, rival);
-  const danger = sameRoad && Math.abs(gap) < 9 && Math.abs(rival.lane - mine.lane) < 0.85;
-  const collision = mine.lastCarCollisionAt != null && (race.now ?? race.updatedAt) - mine.lastCarCollisionAt < 1600;
+  const ghost = race.carInteraction === "ghost";
+  const danger = !ghost && sameRoad && Math.abs(gap) < 9 && Math.abs(rival.lane - mine.lane) < 0.85;
+  const collision = !ghost && mine.lastCarCollisionAt != null && (race.now ?? race.updatedAt) - mine.lastCarCollisionAt < 1600;
   return <div className={`rival-radar ${danger ? "danger" : ""}`} role="status">
     <span className="rival-dot" style={{ background: colors[other] }} />
     <div><strong>{names[other]} · {sameRoad ? gap >= 0 ? "前方" : "後方" : "別の区間 / 分岐"} {Math.abs(gap).toFixed(1)} u</strong>
-      <span>{collision ? "車両に接触 · 両車が減速中" : danger ? "接近注意 · 減速か車線変更で回避" : sameRoad ? `${["左", "中央", "右"][Math.round(rival.lane)]}レーン · 相手の車も衝突対象です` : "合流時は相手の位置を確認"}</span></div>
-    <b>CONTACTS {mine.carCollisions ?? 0}</b>
+      <span>{ghost ? "相手とはすり抜け · コース上の障害物だけを回避" : collision ? "車両に接触 · 両車が減速中" : danger ? "接近注意 · 減速か車線変更で回避" : sameRoad ? `${["左", "中央", "右"][Math.round(rival.lane)]}レーン · 相手の車も衝突対象です` : "合流時は相手の位置を確認"}</span></div>
+    <b>{ghost ? "GHOST" : `CONTACTS ${mine.carCollisions ?? 0}`}</b>
   </div>;
 }
 
@@ -103,6 +104,7 @@ export function TacticalRoad({ race, player }: { race: TacticalRace; player: Id 
   const sameRoad = roadKey(race.course, mine) === roadKey(race.course, rival);
   const guidance = routeGuidance(race.course, mine);
   const visibleDistance = race.paceRules?.visibleDistance ?? 60;
+  const ghost = race.carInteraction === "ghost";
   // Enlarge the near field so the two cars remain distinguishable at bumper distance.
   const depth = (distance: number) => Math.sign(distance) * (Math.abs(distance) <= 6 ? Math.abs(distance) * 22 : 132 + (Math.abs(distance) - 6) * (2.1 * 54 / (visibleDistance - 6)));
   const now = race.now ?? race.updatedAt;
@@ -110,25 +112,26 @@ export function TacticalRoad({ race, player }: { race: TacticalRace; player: Id 
     const effect = raceEffectsAt(race.players[id], now, race.phase);
     return <g transform={`translate(${100 + lane * 110} ${y})`} data-effect={effect.spinning ? "spin" : effect.airborne ? "jump" : "ground"}>
       {effect.airborne && <><ellipse rx="22" ry="31" fill="#07131e" opacity=".5" /><path d="M-14 18l-8 18M0 21v25M14 18l8 18" stroke="#a7f4ff" strokeWidth="4" /></>}
-      <g transform={`translate(0 ${-effect.height * 7}) rotate(${effect.spinRadians * 180 / Math.PI}) scale(${1 + effect.height * .035})`}>
-        <rect x="-18" y="-29" width="36" height="58" rx="8" fill={colors[id]} stroke="#eff6ff" strokeWidth={own ? 2 : 3} /><rect x="-12" y="-7" width="24" height="18" rx="3" fill="#11242f" /><path d="M-21 -19V-8M21 -19V-8M-21 14V24M21 14V24" stroke="#08131d" strokeWidth="6" />
+      <g opacity={ghost && !own ? 0.45 : 1} transform={`translate(0 ${-effect.height * 7}) rotate(${effect.spinRadians * 180 / Math.PI}) scale(${1 + effect.height * .035})`}>
+        <rect x="-18" y="-29" width="36" height="58" rx="8" fill={colors[id]} stroke="#eff6ff" strokeWidth={own ? 2 : 3} strokeDasharray={ghost && !own ? "5 3" : undefined} /><rect x="-12" y="-7" width="24" height="18" rx="3" fill="#11242f" /><path d="M-21 -19V-8M21 -19V-8M-21 14V24M21 14V24" stroke="#08131d" strokeWidth="6" />
       </g>
-      <text x="0" y={own ? 49 : -39 - effect.height * 7} fill={colors[id]} fontSize="13" fontWeight="bold" textAnchor="middle">{own ? `YOU / ${names[id]}` : names[id]}</text>
+      <text x="0" y={own ? 49 : -39 - effect.height * 7} fill={colors[id]} fontSize="13" fontWeight="bold" textAnchor="middle">{own ? `YOU / ${names[id]}` : `${names[id]}${ghost ? " / すり抜け" : ""}`}</text>
       {(effect.airborne || effect.spinning) && <text x="0" y={own ? 68 : -58 - effect.height * 7} fill={effect.spinning ? "#ffe274" : "#a7f4ff"} fontSize="13" fontWeight="bold" textAnchor="middle">{effect.spinning ? `SPIN ${(effect.spinRemainingMs / 1000).toFixed(1)}s · 停止中` : `AIR ${(effect.jumpRemainingMs / 1000).toFixed(1)}s`}</text>}
     </g>;
   };
-  return <svg className="road-preview tactical-road" viewBox="0 0 420 440" role="img" aria-label={`前方${visibleDistance}ユニットと後方4ユニット。自車と${sameRoad ? "相手車両" : "別ルートの相手は非表示"}、障害物を表示`}>
+  return <svg className="road-preview tactical-road" viewBox="0 0 420 440" role="img" aria-label={`前方${visibleDistance}ユニットと後方4ユニット。自車と${sameRoad ? "相手車両" : "別ルートの相手は非表示"}、障害物を表示。${ghost ? "相手車両はすり抜け可能" : "相手車両も衝突対象"}`}>
     <defs><pattern id={`lane-dashes-${player}`} x="0" y={(mine.progress * 4.2) % 40} width="110" height="40" patternUnits="userSpaceOnUse"><path d="M45 0V20" stroke="#8d9da4" strokeWidth="2" /></pattern></defs>
     <rect width="420" height="440" rx="12" fill="#11212b" /><path d="M45 45H375V424H45Z" fill="#2c3d48" />
     <rect x="150" y="45" width="120" height="375" fill={`url(#lane-dashes-${player})`} />
     <path d="M45 45V424M375 45V424" stroke="#d8ed94" strokeWidth="4" strokeDasharray="12 10" />
     <text x="210" y="25" textAnchor="middle" fill="#d8ed94" fontSize="12" fontWeight="bold">{guidance.phase === "branch" ? `分岐${guidance.junctionNumber} · ${guidance.direction}ルート走行中（確定）` : guidance.junction ? `本道 → 分岐${guidance.junctionNumber}で${guidance.direction}へ / ${guidance.explicitChoice ? "選択済み" : "既定"}` : "本道 · すべての分岐を通過"}</text>
+    {ghost && sameRoad && gap >= -4 && gap <= visibleDistance && car(other, rival.lane, 318 - depth(gap), false)}
     {mine.upcomingObstacles.map(o => { const distance = o.progress - mine.progress; if (distance < -2 || distance > visibleDistance) return null; const asset = getObstacleAsset(o.assetId); return <g key={o.id} transform={`translate(${100 + o.blockedLane * 110} ${318 - depth(distance)})`}>
       {asset ? <image href={asset.topUrl} x="-31" y="-31" width="62" height="62"><title>{asset.label}</title></image> : <><rect x="-40" y="-11" width="80" height="22" rx="3" fill="#f2bd54" /><path d="M-30 -10L-10 10M-5 -10L15 10M20 -10L40 10" stroke="#695024" strokeWidth="7" /></>}
       <text x="0" y={asset ? -35 : -19} textAnchor="middle" fill="#ffe0a1" fontSize="12">{asset ? `${asset.label} · ` : ""}{distance.toFixed(0)} u</text>
     </g>; })}
-    {sameRoad && gap >= -4 && gap <= visibleDistance && car(other, rival.lane, 318 - depth(gap), false)}
+    {!ghost && sameRoad && gap >= -4 && gap <= visibleDistance && car(other, rival.lane, 318 - depth(gap), false)}
     {car(player, mine.lane, 318, true)}
-    <text x="100" y="410" textAnchor="middle" fill="#c0d0d5" fontSize="11">左車線</text><text x="210" y="410" textAnchor="middle" fill="#c0d0d5" fontSize="11">中央車線</text><text x="320" y="410" textAnchor="middle" fill="#c0d0d5" fontSize="11">右車線</text><text x="210" y="431" textAnchor="middle" fill="#b8c9d2" fontSize="11">FRONT {visibleDistance} u / REAR 4 u · 車両同士も衝突します</text>
+    <text x="100" y="410" textAnchor="middle" fill="#c0d0d5" fontSize="11">左車線</text><text x="210" y="410" textAnchor="middle" fill="#c0d0d5" fontSize="11">中央車線</text><text x="320" y="410" textAnchor="middle" fill="#c0d0d5" fontSize="11">右車線</text><text x="210" y="431" textAnchor="middle" fill="#b8c9d2" fontSize="11">FRONT {visibleDistance} u / REAR 4 u · {ghost ? "車両はすり抜け可能" : "車両同士も衝突します"}</text>
   </svg>;
 }

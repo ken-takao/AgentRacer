@@ -6,6 +6,7 @@ export type RaceTimelineSnapshot = {
   createdAt: number;
   updatedAt: number;
   version?: number;
+  carInteraction?: "solid" | "ghost";
   course?: CourseFeatures;
   players: Record<"red" | "blue", {
     progress: number;

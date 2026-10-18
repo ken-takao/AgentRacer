@@ -7,6 +7,7 @@ export type PlayerId = "red" | "blue";
 export type Lane = 0 | 1 | 2;
 export type SpeedMode = "slow" | "normal" | "turbo";
 export type RacePace = "sprint-2x";
+export type CarInteraction = "solid" | "ghost";
 export type RacePhase = "lobby" | "countdown" | "racing" | "finished" | "cancelled";
 export type RaceInput =
   | { type: "join" }
@@ -45,6 +46,11 @@ export type RacePaceRules = Readonly<{ speedMultiplier: number; visibleDistance:
 /** A saved opt-in selects a stable ruleset; missing fields and all v1 races stay classic. */
 export function racePaceRules(state: Pick<RaceState, "version" | "pace">): RacePaceRules {
   return state.version === 2 && state.pace === "sprint-2x" ? SPRINT_PACE_RULES : CLASSIC_PACE_RULES;
+}
+
+/** Missing fields preserve the contact rules of already saved races. */
+export function raceCarInteraction(state: Pick<RaceState, "version" | "carInteraction">): CarInteraction {
+  return state.version === 2 && state.carInteraction === "ghost" ? "ghost" : "solid";
 }
 
 export interface Obstacle {
@@ -109,6 +115,8 @@ export interface RaceState {
   version: 1 | 2;
   /** Immutable at creation; never inferred from a deployment's current defaults. */
   pace?: RacePace;
+  /** Fixed when created; old saved races without this field keep their rules. */
+  carInteraction?: CarInteraction;
   seed: string;
   phase: RacePhase;
   createdAt: number;
@@ -139,6 +147,7 @@ export type PublicRaceState = Omit<RaceState, "players" | "carContact"> & {
   players: Record<PlayerId, PublicRacer>;
   remainingMs: number;
   paceRules: RacePaceRules;
+  carInteraction: CarInteraction;
 };
 
 export class RaceRuleError extends Error {
@@ -201,10 +210,13 @@ function arrivalTime(cursor: number, distance: number, speed: number): number {
   return distance <= EPSILON ? cursor : speed > EPSILON ? cursor + distance / speed * 1000 : Infinity;
 }
 
-export function createRace(seed: string | number, now: number, options: { pace?: RacePace } = {}): RaceState {
+export function createRace(seed: string | number, now: number, options: { pace?: RacePace; carInteraction?: CarInteraction } = {}): RaceState {
   validTime(now);
   if (!options || typeof options !== "object" || Array.isArray(options) || (options.pace !== undefined && options.pace !== "sprint-2x")) {
     throw new RaceRuleError("INVALID_INPUT", "Unknown race pace");
+  }
+  if (options.carInteraction !== undefined && options.carInteraction !== "ghost" && options.carInteraction !== "solid") {
+    throw new RaceRuleError("INVALID_INPUT", "Unknown car interaction");
   }
   if ((typeof seed !== "string" && typeof seed !== "number") || (typeof seed === "number" && !Number.isFinite(seed))) {
     throw new RaceRuleError("INVALID_INPUT", "seed must be a string or finite number");
@@ -234,7 +246,7 @@ export function createRace(seed: string | number, now: number, options: { pace?:
     slowedUntil: 0, nextObstacleIndex: 0, routeChoices: {}, carCollisions: 0,
   });
   return {
-    version: 2, ...(options.pace ? { pace: options.pace } : {}), seed: seedText, phase: "lobby", createdAt: now, updatedAt: now,
+    version: 2, ...(options.pace ? { pace: options.pace } : {}), carInteraction: options.carInteraction ?? "ghost", seed: seedText, phase: "lobby", createdAt: now, updatedAt: now,
     countdownEndsAt: null, startedAt: null, finishedAt: null, finishReason: null, winner: null,
     players: { red: player("red", 0), blue: player("blue", 2) },
     course: { length: RACE_RULES.length, obstacles, ...features }, history: [],
@@ -365,7 +377,7 @@ function motionAt(state: RaceState, at: number, origin = 0): Motion {
       lane[id] = Math.abs(player.targetLane - player.lane) > EPSILON ? Math.sign(player.targetLane - player.lane) * RACE_RULES.laneChangePerSecond : 0;
     }
   }
-  if (state.carContact && shareRoad(state)) {
+  if (raceCarInteraction(state) === "solid" && state.carContact && shareRoad(state)) {
     const { axis, direction } = state.carContact;
     const x = state.players.blue.progress - state.players.red.progress;
     const y = state.players.blue.lane - state.players.red.lane;
@@ -387,6 +399,7 @@ function motionAt(state: RaceState, at: number, origin = 0): Motion {
 }
 
 function contactEnded(state: RaceState): boolean {
+  if (raceCarInteraction(state) === "ghost") return true;
   if (!shareRoad(state)) return true;
   const x = state.players.blue.progress - state.players.red.progress;
   const y = state.players.blue.lane - state.players.red.lane;
@@ -397,7 +410,7 @@ type ContactEvent = CarContact & { seconds: number };
 
 /** Swept AABB intersection: no sampling, including cars swapping lanes between polls. */
 function collisionTime(state: RaceState, motion: Motion): ContactEvent | undefined {
-  if (!shareRoad(state) || state.carContact) return;
+  if (raceCarInteraction(state) === "ghost" || !shareRoad(state) || state.carContact) return;
   const x = state.players.blue.progress - state.players.red.progress;
   const y = state.players.blue.lane - state.players.red.lane;
   const interval = (distance: number, velocity: number, extent: number): [number, number] => {
@@ -767,6 +780,7 @@ export function publicView(source: RaceState): PublicRaceState {
   const maximum = Math.max(red.progress, blue.progress) + paceRules.visibleDistance;
   return {
     ...visibleState,
+    carInteraction: raceCarInteraction(state),
     paceRules: { ...paceRules },
     players: { red, blue },
     course: { ...state.course, obstacles: state.version === 2 ? state.course.obstacles : state.course.obstacles.filter((obstacle) => obstacle.progress >= minimum && obstacle.progress <= maximum) },

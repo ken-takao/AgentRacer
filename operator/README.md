@@ -73,7 +73,7 @@ Commentary has a five-minute maximum and closes when the race finishes or stops.
 
 ## Decisions API
 
-The visual decision client is `operator/drive-decisions.mjs`. It uses `POST /v1/decisions` with a choice question plus two hazard predicates. This is in addition to each Agents API session and optional GPT-Live session. The screenshot expires after 12 seconds and a request times out after 8 seconds. These limits do not remove Computer Use latency, so this mode is not guaranteed faster than a direct CU strategy. Physical collisions remain deterministic in the game engine.
+The visual decision client is `operator/drive-decisions.mjs`. It uses `POST /v1/decisions` with an action choice and obstacle-risk predicate. New ghost races skip the rival-risk predicate and tell the model that cars cannot block or slow each other. The saved public race state selects this rule; old solid races retain the third, rival-risk question. Text observations also omit rival positions from the API payload in ghost mode. An unasked rival risk is published as `null`, not a measured zero. This is in addition to each Agents API session and optional GPT-Live session. The screenshot expires after 12 seconds and a request times out after 8 seconds. These limits do not remove Computer Use latency, so this mode is not guaranteed faster than a direct CU strategy. Course-obstacle collisions remain deterministic in the game engine.
 
 The public `/api/races/:id/decisions` feed contains only allowlisted decisions and metrics; writes require the race admin key and are ordered by timestamp/count. Older races can have no decision feed. Deploy the site update before starting this operator.
 

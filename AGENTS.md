@@ -53,6 +53,10 @@ product and `operator/README.md` before changing the operator or AI integrations
 - Preserve existing rules unless the task explicitly changes them. In particular:
   routes lock on entry; default routes come from `lib/race-course.ts`; separate
   branches do not collide; legacy v1 races retain their existing behavior.
+- New races use `carInteraction: "ghost"`: cars pass through each other without
+  contact penalties or motion constraints. Missing saved fields and explicit
+  `"solid"` retain the old rules. Keep course-obstacle collisions, banana spins
+  and jumping unchanged. Ghost decisions omit rival-risk assessment.
 - Jumps last 0.8 seconds, with 2 seconds of cooldown after landing. Airborne,
   spinning, pre-race, and post-race jumps are rejected. Banana contact stops progress
   for 1.2 seconds and spins at the contact position; queued lane/speed changes take
