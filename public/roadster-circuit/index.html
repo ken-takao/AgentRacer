@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roadster Web Model</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, -apple-system, "Noto Sans JP", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #080b10; color: #edf1f6; }
+    main { min-height: 100vh; display: grid; grid-template-rows: auto minmax(430px,1fr) auto; }
+    header, footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 22px clamp(20px,4vw,64px); }
+    header { border-bottom: 1px solid #28303b; }
+    h1 { margin: 0; font-size: clamp(20px,2.6vw,34px); letter-spacing: .16em; font-weight: 600; }
+    header p, footer p { margin: 5px 0 0; color: #8995a4; font-size: 12px; letter-spacing: .05em; }
+    .badge { color: #adc1d5; border: 1px solid #384756; border-radius: 999px; padding: 8px 13px; white-space: nowrap; font-size: 12px; }
+    #stage { position: relative; overflow: hidden; background: radial-gradient(ellipse at 52% 52%, #26313f 0%, #111923 42%, #080b10 80%); }
+    #stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+    #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #b5c1ce; font-size: 13px; letter-spacing: .12em; pointer-events: none; }
+    .controls { position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; padding: 7px; border: 1px solid #46515e; border-radius: 999px; background: #0d131bcf; backdrop-filter: blur(12px); }
+    button, .download { color: #edf1f6; background: transparent; border: 0; border-radius: 999px; padding: 10px 14px; cursor: pointer; font: inherit; font-size: 13px; white-space: nowrap; text-decoration: none; }
+    button:hover, .download:hover, button[aria-pressed="true"] { background: #2c3b4b; }
+    footer { border-top: 1px solid #28303b; }
+    footer a { color: #b4cbe3; }
+    @media(max-width:600px) { header,footer { align-items: flex-start; flex-direction: column; gap: 8px; } main { grid-template-rows: auto minmax(420px,1fr) auto; } .controls { width: calc(100% - 20px); justify-content: center; gap: 3px; } button,.download { padding: 9px 7px; font-size: 11px; } }
+  </style>
+  <script type="importmap">
+    {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}
+  </script>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>ROADSTER</h1><p>2026 コンセプトをもとにした軽量Webモデル</p></div>
+    <div style="display:flex;align-items:center;gap:10px"><a class="badge" href="./race.html" style="text-decoration:none">レースを試す →</a><span class="badge" id="stats">88 KB · 1,506 triangles</span></div>
+  </header>
+  <section id="stage" aria-label="回転できる3Dロードスターモデル">
+    <div id="loading">MODEL LOADING…</div>
+    <div class="controls">
+      <button id="spin" aria-pressed="true">自動回転</button>
+      <button id="hover" aria-pressed="false">ホバー</button>
+      <button id="top">上から</button>
+      <button id="reset">視点を戻す</button>
+      <a class="download" href="./roadster_web.glb" download>GLB</a>
+    </div>
+  </section>
+  <footer>
+    <p>ドラッグで回転 · スクロールで拡大 · ピンチ操作に対応</p>
+    <p>形状の参考: <a href="https://transcarweb.com/2610-tesla-roadster-2nd-fmc/" target="_blank" rel="noopener noreferrer">TRANS CARの記事</a>。非公式の簡略化モデルです。</p>
+  </footer>
+</main>
+<script type="module">
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+  const stage = document.querySelector('#stage');
+  const loading = document.querySelector('#loading');
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'low-power' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.8));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.7;
+  stage.prepend(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(36, 1, .1, 100);
+  const home = new THREE.Vector3(-6, 3.7, 8);
+  camera.position.copy(home);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.set(0, .62, 0);
+  controls.enableDamping = true;
+  controls.minDistance = 4;
+  controls.maxDistance = 15;
+  controls.maxPolarAngle = Math.PI * .84;
+  controls.autoRotate = true;
+  controls.autoRotateSpeed = 1.2;
+  controls.update();
+
+  scene.add(new THREE.HemisphereLight(0xc9d7ed, 0x171a20, 3));
+  const key = new THREE.DirectionalLight(0xffffff, 4);
+  key.position.set(-4, -5, 8); scene.add(key);
+  const rim = new THREE.DirectionalLight(0xa9c9ff, 3);
+  rim.position.set(4, 5, 5); scene.add(rim);
+
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(3.9, 40), new THREE.MeshBasicMaterial({ color: 0x111923, transparent: true, opacity: .54, depthWrite: false }));
+  floor.rotation.x = -Math.PI / 2; floor.position.y = -.04; scene.add(floor);
+  let model = null;
+  let hovering = false;
+  new GLTFLoader().load('./roadster_web.glb', gltf => {
+    model = gltf.scene;
+    scene.add(model);
+    loading.remove();
+  }, undefined, error => {
+    loading.textContent = 'モデルを読み込めませんでした。HTTPサーバーから開いてください。';
+    console.error(error);
+  });
+
+  document.querySelector('#spin').addEventListener('click', e => {
+    controls.autoRotate = !controls.autoRotate;
+    e.currentTarget.setAttribute('aria-pressed', String(controls.autoRotate));
+  });
+  document.querySelector('#hover').addEventListener('click', e => {
+    hovering = !hovering;
+    e.currentTarget.setAttribute('aria-pressed', String(hovering));
+  });
+  document.querySelector('#top').addEventListener('click', () => {
+    controls.autoRotate = false;
+    document.querySelector('#spin').setAttribute('aria-pressed', 'false');
+    camera.up.set(-1, 0, 0);
+    camera.position.set(0, 12, 0);
+    controls.target.set(0, .62, 0);
+    controls.update();
+  });
+  document.querySelector('#reset').addEventListener('click', () => {
+    camera.up.set(0, 1, 0);
+    camera.position.copy(home);
+    controls.target.set(0, .62, 0);
+    controls.update();
+  });
+  function resize() {
+    const w = stage.clientWidth, h = stage.clientHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  new ResizeObserver(resize).observe(stage);
+  resize();
+  function animate(t) {
+    if (model) model.position.y = hovering ? .24 + Math.sin(t * .002) * .06 : 0;
+    controls.update();
+    renderer.render(scene, camera);
+    requestAnimationFrame(animate);
+  }
+  requestAnimationFrame(animate);
+</script>
+</body>
+</html>

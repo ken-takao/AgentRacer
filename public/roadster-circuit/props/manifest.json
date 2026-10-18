@@ -1,0 +1,138 @@
+[
+  {
+    "id": "traffic_cone",
+    "label": "コーン",
+    "kind": "obstacle",
+    "glb": "traffic_cone.glb",
+    "sprite": "traffic_cone_iso.png",
+    "top": "traffic_cone_top.png",
+    "triangles": 144,
+    "bytes": 9320
+  },
+  {
+    "id": "water_barrier",
+    "label": "バリケード",
+    "kind": "obstacle",
+    "glb": "water_barrier.glb",
+    "sprite": "water_barrier_iso.png",
+    "top": "water_barrier_top.png",
+    "triangles": 96,
+    "bytes": 10104
+  },
+  {
+    "id": "tire_stack",
+    "label": "タイヤの山",
+    "kind": "obstacle",
+    "glb": "tire_stack.glb",
+    "sprite": "tire_stack_iso.png",
+    "top": "tire_stack_top.png",
+    "triangles": 564,
+    "bytes": 26020
+  },
+  {
+    "id": "chevron_sign",
+    "label": "カーブ案内",
+    "kind": "sign",
+    "glb": "chevron_sign.glb",
+    "sprite": "chevron_sign_iso.png",
+    "top": "chevron_sign_top.png",
+    "triangles": 84,
+    "bytes": 7668
+  },
+  {
+    "id": "speed_limit_80",
+    "label": "制限速度80",
+    "kind": "sign",
+    "glb": "speed_limit_80.glb",
+    "sprite": "speed_limit_80_iso.png",
+    "top": "speed_limit_80_top.png",
+    "triangles": 320,
+    "bytes": 24220
+  },
+  {
+    "id": "speed_radar",
+    "label": "速度表示板",
+    "kind": "interactive",
+    "glb": "speed_radar.glb",
+    "sprite": "speed_radar_iso.png",
+    "top": "speed_radar_top.png",
+    "triangles": 288,
+    "bytes": 28064
+  },
+  {
+    "id": "boost_pad",
+    "label": "加速パネル",
+    "kind": "powerup",
+    "glb": "boost_pad.glb",
+    "sprite": "boost_pad_iso.png",
+    "top": "boost_pad_top.png",
+    "triangles": 96,
+    "bytes": 9076
+  },
+  {
+    "id": "banana_peel",
+    "label": "くるくるバナナ",
+    "kind": "obstacle",
+    "glb": "banana_peel.glb",
+    "sprite": "banana_peel_iso.png",
+    "top": "banana_peel_top.png",
+    "effect": "spin",
+    "triangles": 312,
+    "bytes": 22156
+  },
+  {
+    "id": "rainbow_oil",
+    "label": "虹色オイル",
+    "kind": "obstacle",
+    "glb": "rainbow_oil.glb",
+    "sprite": "rainbow_oil_iso.png",
+    "top": "rainbow_oil_top.png",
+    "effect": "reverse steering",
+    "triangles": 264,
+    "bytes": 15740
+  },
+  {
+    "id": "rubber_duck",
+    "label": "巨大アヒル",
+    "kind": "obstacle",
+    "glb": "rubber_duck.glb",
+    "sprite": "rubber_duck_iso.png",
+    "top": "rubber_duck_top.png",
+    "effect": "bump",
+    "triangles": 584,
+    "bytes": 35556
+  },
+  {
+    "id": "sticky_donut",
+    "label": "ねばねばドーナツ",
+    "kind": "obstacle",
+    "glb": "sticky_donut.glb",
+    "sprite": "sticky_donut_iso.png",
+    "top": "sticky_donut_top.png",
+    "effect": "sticky slow",
+    "triangles": 492,
+    "bytes": 29304
+  },
+  {
+    "id": "ufo_magnet",
+    "label": "UFOマグネット",
+    "kind": "obstacle",
+    "glb": "ufo_magnet.glb",
+    "sprite": "ufo_magnet_iso.png",
+    "top": "ufo_magnet_top.png",
+    "effect": "magnetic pull",
+    "triangles": 884,
+    "bytes": 53144
+  },
+  {
+    "id": "beach_ball",
+    "label": "跳ねるビーチボール",
+    "kind": "obstacle",
+    "glb": "beach_ball.glb",
+    "sprite": "beach_ball_iso.png",
+    "top": "beach_ball_top.png",
+    "effect": "side bounce",
+    "triangles": 236,
+    "bytes": 16084
+  }
+]

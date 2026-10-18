@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleDot, Flag, Gauge, Maximize2, Monitor, Radio, Trophy, Zap } from "lucide-react";
+import { RoadsterCars } from "./roadster-cars";
 
 type PlayerId = "red" | "blue";
 type Speed = "slow" | "normal" | "turbo";
@@ -93,16 +94,22 @@ function trackPoint(progress: number, lane: number, length: number) {
   const a = Math.PI / 2 + (d - straight * 2 - Math.PI * radius) / radius;
   return { x: 220 + Math.cos(a) * radius, y: 244 + Math.sin(a) * radius, angle: a * 180 / Math.PI + 180 };
 }
-function Circuit({ race, decorative = false }: { race?: Race | null; decorative?: boolean }) {
+function Circuit({ race, decorative = false, previewProgress }: { race?: Race | null; decorative?: boolean; previewProgress?: number }) {
+  const [modelsReady, setModelsReady] = useState(false);
   const length = race?.course.length || 200;
   const positions = (["red", "blue"] as PlayerId[]).map((id, i) => {
     const driver = race?.players[id];
-    return trackPoint(driver?.progress ?? (decorative ? 34 + i * 74 : 1), driver?.lane ?? i * 2, length);
+    return trackPoint(driver?.progress ?? (previewProgress === undefined ? (decorative ? 34 + i * 74 : 1) : previewProgress + i * 18), driver?.lane ?? i * 2, length);
   });
   const closeTogether = Math.hypot(positions[0].x - positions[1].x, positions[0].y - positions[1].y) < 36;
   const labelCenterX = (positions[0].x + positions[1].x) / 2;
   const labelY = Math.min(positions[0].y, positions[1].y) - 63;
-  return <svg className={`circuit ${decorative ? "decorative-circuit" : ""}`} viewBox="0 0 860 475" role="img" aria-label="リアルタイムの3レーンレースコース。赤と青の車の位置を表示">
+  const modelPositions = positions.map((p, i) => {
+    const offset = closeTogether ? (i === 0 ? -22 : 22) : 0;
+    const radians = p.angle * Math.PI / 180;
+    return { x: p.x + Math.cos(radians) * offset, y: p.y + Math.sin(radians) * offset, angle: p.angle };
+  });
+  return <div className={`circuit-stage ${modelsReady ? "models-ready" : ""}`}><svg className={`circuit ${decorative ? "decorative-circuit" : ""}`} viewBox="0 0 860 475" role="img" aria-label="リアルタイムの3レーンレースコース。赤と青の車の位置を表示">
     <defs><pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" stroke="#ffffff" strokeOpacity=".035" /></pattern><pattern id="checker" width="12" height="12" patternUnits="userSpaceOnUse"><rect width="12" height="12" fill="#e7e5d8" /><path d="M0 0H6V6H0ZM6 6H12V12H6Z" fill="#151c21" /></pattern><filter id="carShadow"><feDropShadow dx="0" dy="4" stdDeviation="5" floodOpacity=".55" /></filter></defs>
     <rect width="860" height="475" fill="url(#grid)" />
     <path d="M220 136H640A108 108 0 0 1 640 352H220A108 108 0 0 1 220 136" fill="none" stroke="#080e13" strokeWidth="109" />
@@ -125,7 +132,7 @@ function Circuit({ race, decorative = false }: { race?: Race | null; decorative?
         {closeTogether && <g><line x1={p.x} y1={p.y} x2={p.x + dx} y2={p.y + dy} stroke={COLORS[id]} strokeWidth="1" strokeDasharray="2 2" opacity=".8" /><circle cx={p.x} cy={p.y} r="3" fill={COLORS[id]} stroke="#11191f" strokeWidth="1" /></g>}
         <g transform={`translate(${p.x + dx} ${p.y + dy})`}>
           <circle r="31" fill={COLORS[id]} opacity=".08" />
-          <g transform={`rotate(${p.angle})`} filter="url(#carShadow)"><Car color={id} /></g>
+          <g className="circuit-svg-car" transform={`rotate(${p.angle})`} filter="url(#carShadow)"><Car color={id} /></g>
           {closeTogether && <line x1="0" y1="-28" x2={badgeX} y2={badgeY + 9} stroke={COLORS[id]} strokeWidth="1" opacity=".45" />}
           <g transform={`translate(${badgeX} ${badgeY})`}><rect x="-29" y="-11" width="58" height="20" rx="5" fill="#11191f" stroke={COLORS[id]} strokeOpacity=".55" /><text textAnchor="middle" y="3" fontSize="10" fontWeight="700" fill={COLORS[id]}>{id.toUpperCase()}</text></g>
         </g>
@@ -133,28 +140,48 @@ function Circuit({ race, decorative = false }: { race?: Race | null; decorative?
     })}
     {closeTogether && <text x="430" y="420" textAnchor="middle" fill="#8a999e" fontSize="10">接近時は車体を横にずらして表示 · 点が実際の位置</text>}
     <text x="28" y="444" fill="#647077" fontSize="10" letterSpacing="2">TOKYO CIRCUIT</text><text x="832" y="444" textAnchor="end" fill="#647077" fontSize="10" letterSpacing="2">3 LANES · 200 UNITS</text>
-  </svg>;
+  </svg><RoadsterCars positions={modelPositions} onReady={setModelsReady} /></div>;
 }
 
 export function HomeScreen() {
   const [latest, setLatest] = useState<string | null>(null);
   const [checked, setChecked] = useState(false);
+  const [latestError, setLatestError] = useState(false);
   useEffect(() => {
     const ac = new AbortController();
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
     async function pollLatest() {
+      let failed = false;
       try {
         const response = await fetch("/api/races/latest", { cache: "no-store", signal: ac.signal });
         const result = await response.json() as { id?: string };
-        if (!disposed && response.ok) setLatest(result.id || null);
-      } catch { /* A new race can appear while the home page is open. */ }
-      if (!disposed) { setChecked(true); timer = setTimeout(pollLatest, 3000); }
+        if (!disposed) {
+          if (response.ok) setLatest(result.id || null);
+          setLatestError(!response.ok);
+          failed = !response.ok;
+        }
+      } catch { if (!disposed) setLatestError(true); failed = true; }
+      if (!disposed) { setChecked(true); timer = setTimeout(pollLatest, failed ? 15000 : 3000); }
     }
     void pollLatest();
     return () => { disposed = true; ac.abort(); clearTimeout(timer); };
   }, []);
-  return <><SiteHeader /><main className="home-main"><section className="home-hero"><div className="eyebrow"><span className="tiny-line" />THE COMPUTER USE RACING EXPERIMENT</div><h1>Two agents.<br /><span>One finish line.</span></h1><p className="home-description">画面を見る。ハンドルを切る。勝利を狙う。<br />2つのAIエージェントが、リアルタイムで競うレース。</p><div className="hero-actions">{latest ? <a className="button button-lime" href={`/race/${enc(latest)}`}><Radio size={18} />レースを観戦する<ArrowUpRight size={19} /></a> : <span className="button button-muted">{checked ? "最初のレースを準備中" : "レースを確認中…"}</span>}<a className="subtle-link" href="http://127.0.0.1:4180/">オペレーター画面<ArrowUpRight size={15} /></a></div><div className="hero-facts"><span><b>02</b> INDEPENDENT AGENTS</span><span><b>03</b> LANES</span><span><b>∞</b> POSSIBILITIES</span></div></section><section className="home-track"><div className="track-topline"><span><CircleDot size={13} />TOKYO CIRCUIT</span><span>REAL-TIME SIMULATION</span></div><Circuit decorative /><div className="home-versus"><span className="red-text">01 / SCARLET</span><span>VS</span><span className="blue-text">02 / COBALT</span></div></section><section className="how-it-works"><div><span className="step">01 / SEE</span><h2>それぞれの視点で</h2><p>独立したクラウドブラウザーで、コースと障害物を観察。</p></div><div><span className="step">02 / DECIDE</span><h2>操作を決める</h2><p>Computer Useがレーンと速度のボタンをクリック。</p></div><div><span className="step">03 / RACE</span><h2>時間は止まらない</h2><p>判断している間もレースは進行。先にゴールしたAIの勝利。</p></div></section><p className="operator-note">対戦の開始は、主催者のローカルオペレーター画面から。観戦はこのサイトで楽しめます。</p></main><Footer /></>;
+  return <><SiteHeader /><main className="home-main"><section className="home-hero"><div className="eyebrow"><span className="tiny-line" />THE COMPUTER USE RACING EXPERIMENT</div><h1>Two agents.<br /><span>One finish line.</span></h1><p className="home-description">画面を見る。ハンドルを切る。勝利を狙う。<br />2つのAIエージェントが、リアルタイムで競うレース。</p><div className="hero-actions">{latest ? <a className="button button-lime" href={`/race/${enc(latest)}`}><Radio size={18} />レースを観戦する<ArrowUpRight size={19} /></a> : <span className="button button-muted">{!checked ? "レースを確認中…" : latestError ? "レース情報を取得できません" : "開催中のレースはありません"}</span>}<a className="button button-lime" href="/preview/roadster">Roadsterを確認<ArrowUpRight size={17} /></a><a className="subtle-link" href="http://127.0.0.1:4180/">オペレーター画面<ArrowUpRight size={15} /></a></div><div className="hero-facts"><span><b>02</b> INDEPENDENT AGENTS</span><span><b>03</b> LANES</span><span><b>∞</b> POSSIBILITIES</span></div></section><section className="home-track"><div className="track-topline"><span><CircleDot size={13} />TOKYO CIRCUIT</span><span>REAL-TIME SIMULATION</span></div><Circuit decorative /><div className="home-versus"><span className="red-text">01 / SCARLET</span><span>VS</span><span className="blue-text">02 / COBALT</span></div></section><section className="how-it-works"><div><span className="step">01 / SEE</span><h2>それぞれの視点で</h2><p>独立したクラウドブラウザーで、コースと障害物を観察。</p></div><div><span className="step">02 / DECIDE</span><h2>操作を決める</h2><p>Computer Useがレーンと速度のボタンをクリック。</p></div><div><span className="step">03 / RACE</span><h2>時間は止まらない</h2><p>判断している間もレースは進行。先にゴールしたAIの勝利。</p></div></section><p className="operator-note">対戦の開始は、主催者のローカルオペレーター画面から。観戦はこのサイトで楽しめます。</p></main><Footer /></>;
+}
+export function RoadsterPreviewScreen() {
+  const [progress, setProgress] = useState(0);
+  useEffect(() => {
+    let frame = 0;
+    const start = performance.now();
+    const animate = (now: number) => {
+      setProgress(((now - start) / 1000 * 8) % 200);
+      frame = requestAnimationFrame(animate);
+    };
+    frame = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  return <><SiteHeader /><main className="spectator-main"><div className="race-heading"><div><div className="eyebrow">TESLA ROADSTER / MODEL PREVIEW</div><h1>Roadster <em>preview.</em></h1><p>赤と青のGLBモデルをコース上で確認できます。レースのAPIやデータベースは使用しません。</p></div><a className="subtle-link" href="/">ホームに戻る<ArrowUpRight size={15} /></a></div><section className="track-panel"><div className="track-topline"><span><CircleDot size={13} />MODEL PREVIEW</span><span>RED · BLUE</span></div><Circuit previewProgress={progress} /></section></main><Footer /></>;
 }
 function Footer() { return <footer className="site-footer"><span>AGENT GRAND PRIX</span><span>BUILT WITH OPENAI AGENTS API + COMPUTER USE</span><span>DEMO / 2026</span></footer>; }
 function Progress({ race }: { race: Race }) {

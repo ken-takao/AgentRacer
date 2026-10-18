@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ROADSTER 10-CAR CIRCUIT</title>
+  <style>
+    :root { font-family: Inter, system-ui, -apple-system, "Noto Sans JP", sans-serif; color: #f3f7fa; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #101a1e; }
+    #game { width: 100%; height: 100%; position: relative; overflow: hidden; }
+    #game canvas.webgl { display: block; width: 100%; height: 100%; }
+    .hud { position: absolute; z-index: 2; inset: 0 0 auto; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 22px; pointer-events: none; }
+    .brand, .panel, .minimap, .hint, .touch, .status { background: #0b1219c9; border: 1px solid #ffffff27; box-shadow: 0 12px 35px #0004; backdrop-filter: blur(10px); }
+    .brand { padding: 13px 17px; border-radius: 15px; }
+    .brand strong { display: block; font-size: 18px; letter-spacing: .16em; }
+    .brand span { display: block; margin-top: 3px; color: #aab9c4; font-size: 11px; letter-spacing: .13em; }
+    .readouts { display: flex; gap: 8px; }
+    .panel { min-width: 102px; padding: 10px 14px; border-radius: 14px; text-align: right; }
+    .panel small { display: block; color: #aab9c4; font-size: 10px; letter-spacing: .12em; }
+    .panel b { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; }
+    .panel em { font-size: 11px; font-style: normal; color: #aab9c4; }
+    .right { display: grid; gap: 8px; justify-items: end; pointer-events: auto; }
+    .minimap { width: 170px; height: 120px; border-radius: 14px; }
+    .buttons { display: flex; gap: 6px; }
+    .buttons a, .buttons button { appearance: none; color: #e8f0f7; background: #0b1219c9; border: 1px solid #ffffff30; border-radius: 999px; padding: 8px 12px; font: inherit; font-size: 11px; text-decoration: none; cursor: pointer; }
+    .buttons a:hover, .buttons button:hover { background: #2c3e4a; }
+    .hint { position: absolute; z-index: 2; bottom: 20px; left: 50%; transform: translateX(-50%); border-radius: 999px; padding: 10px 16px; color: #d8e4ea; font-size: 12px; white-space: nowrap; pointer-events: none; }
+    .status { position: absolute; z-index: 3; top: 50%; left: 50%; transform: translate(-50%,-50%); max-width: min(90vw, 480px); padding: 18px 22px; border-radius: 18px; text-align: center; font-size: 14px; line-height: 1.6; }
+    .status[hidden] { display: none; }
+    .touch { position: absolute; z-index: 2; bottom: 18px; display: flex; gap: 8px; padding: 7px; border-radius: 18px; touch-action: none; }
+    .touch.left { left: 18px; }
+    .touch.right { right: 18px; }
+    .touch button { min-width: 55px; min-height: 56px; color: white; background: #2b3b4bc7; border: 1px solid #ffffff4a; border-radius: 13px; font: inherit; font-size: 20px; font-weight: 700; touch-action: none; user-select: none; }
+    .touch button.pressed { background: #d85142; }
+    .touch.right button { font-size: 12px; }
+    @media (hover:hover) and (pointer:fine) { .touch { display: none; } }
+    @media (max-width:700px) {
+      .hud { padding: 10px; gap: 5px; }
+      .brand { padding: 8px 10px; }
+      .brand strong { font-size: 12px; }
+      .brand span { font-size: 8px; }
+      .readouts { gap: 4px; }
+      .panel { min-width: 65px; padding: 7px; }
+      .panel b { font-size: 17px; }
+      .panel small { font-size: 8px; }
+      .panel em { font-size: 8px; }
+      .minimap { width: 110px; height: 78px; }
+      .buttons a, .buttons button { padding: 6px 8px; font-size: 9px; }
+      .hint { bottom: 92px; font-size: 10px; padding: 7px 10px; }
+      .touch.left { left: 10px; }
+      .touch.right { right: 10px; }
+      .touch { bottom: 10px; gap: 4px; padding: 5px; }
+      .touch button { min-width: 48px; min-height: 49px; }
+    }
+  </style>
+  <script type="importmap">
+    {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}
+  </script>
+</head>
+<body>
+<div id="game">
+  <div class="hud">
+    <div class="brand"><strong>ROADSTER</strong><span>10-CAR CIRCUIT</span></div>
+    <div class="readouts">
+      <div class="panel"><small>速度</small><b id="speed">0</b> <em>km/h</em></div>
+      <div class="panel"><small>周回</small><b id="lap">1</b> <em>/ 3</em></div>
+      <div class="panel"><small>順位</small><b id="position">1</b> <em>/ 10</em></div>
+      <div class="panel"><small>タイム</small><b id="time">0:00.0</b></div>
+    </div>
+    <div class="right">
+      <canvas class="minimap" id="minimap" width="170" height="120" aria-label="コースのミニマップ"></canvas>
+      <div class="buttons"><button id="restart">リスタート</button><a href="./index.html">モデルを見る</a></div>
+    </div>
+  </div>
+  <div class="status" id="status">車とコースの小物を読み込み中…</div>
+  <div class="hint" id="hint">W / ↑ 加速　S / ↓ ブレーキ　A・D / ←・→ ハンドル</div>
+  <div class="touch left"><button data-control="left" aria-label="左に曲がる">◀</button><button data-control="right" aria-label="右に曲がる">▶</button></div>
+  <div class="touch right"><button data-control="brake" aria-label="ブレーキ">BRAKE</button><button data-control="throttle" aria-label="加速">GO</button></div>
+</div>
+<script type="module">
+  import * as THREE from 'three';
+  import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+  const mount = document.querySelector('#game');
+  const status = document.querySelector('#status');
+  const speedText = document.querySelector('#speed');
+  const lapText = document.querySelector('#lap');
+  const positionText = document.querySelector('#position');
+  const timeText = document.querySelector('#time');
+  const hint = document.querySelector('#hint');
+  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.7));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.8;
+  renderer.domElement.className = 'webgl';
+  mount.prepend(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x9bbbc2);
+  scene.fog = new THREE.Fog(0x9bbbc2, 70, 135);
+  const camera = new THREE.PerspectiveCamera(58, 1, .1, 170);
+  scene.add(new THREE.HemisphereLight(0xd8eeff, 0x42604c, 3.5));
+  const sun = new THREE.DirectionalLight(0xffffff, 3.2);
+  sun.position.set(-25, 40, 20); scene.add(sun);
+
+  const grass = new THREE.Mesh(new THREE.PlaneGeometry(220, 220), new THREE.MeshLambertMaterial({ color: 0x3b6748 }));
+  grass.rotation.x = -Math.PI / 2; grass.position.y = -.055; scene.add(grass);
+
+  const RX = 32, RZ = 20, HALF = 4.4, SEGMENTS = 160;
+  const centerline = [];
+  const normalAt = angle => {
+    const n = new THREE.Vector2(Math.cos(angle) / RX, Math.sin(angle) / RZ);
+    return n.normalize();
+  };
+  function point(angle, offset=0) {
+    const n = normalAt(angle);
+    return new THREE.Vector3(RX * Math.cos(angle) + n.x * offset, .014, RZ * Math.sin(angle) + n.y * offset);
+  }
+  function strip(inner, outer, material, alternate=false) {
+    const positions=[], colors=[];
+    const pale = new THREE.Color(0xe6e6de), red = new THREE.Color(0xd24535);
+    for (let i=0;i<SEGMENTS;i++) {
+      const a=i*2*Math.PI/SEGMENTS, b=(i+1)*2*Math.PI/SEGMENTS;
+      const p1=point(a,inner), p2=point(a,outer), p3=point(b,inner), p4=point(b,outer);
+      for (const p of [p1,p2,p3,p2,p4,p3]) positions.push(p.x,p.y,p.z);
+      if (alternate) {
+        const c = Math.floor(i/3)%2 ? pale : red;
+        for(let j=0;j<6;j++) colors.push(c.r,c.g,c.b);
+      }
+    }
+    const geo=new THREE.BufferGeometry();
+    geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+    if(alternate) geo.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
+    geo.computeVertexNormals();
+    const mesh=new THREE.Mesh(geo,material); scene.add(mesh);
+    return mesh;
+  }
+  strip(-HALF,HALF,new THREE.MeshLambertMaterial({color:0x28323a,side:THREE.DoubleSide}));
+  strip(-HALF,-HALF+.46,new THREE.MeshBasicMaterial({vertexColors:true,side:THREE.DoubleSide}),true).position.y=.012;
+  strip(HALF-.46,HALF,new THREE.MeshBasicMaterial({vertexColors:true,side:THREE.DoubleSide}),true).position.y=.012;
+  const dashPoints=[];
+  for(let i=0;i<80;i+=2) {
+    const a=i*2*Math.PI/80,b=(i+.8)*2*Math.PI/80;
+    dashPoints.push(point(a),point(b));
+  }
+  const dashGeo=new THREE.BufferGeometry().setFromPoints(dashPoints);
+  const dashes=new THREE.LineSegments(dashGeo,new THREE.LineBasicMaterial({color:0xb2bec0,transparent:true,opacity:.62}));
+  dashes.position.y=.025; scene.add(dashes);
+  for(let i=0;i<12;i++) {
+    const tile=new THREE.Mesh(new THREE.PlaneGeometry(HALF*2/12,.38),new THREE.MeshBasicMaterial({color:i%2?0x10171a:0xe7ece8,side:THREE.DoubleSide}));
+    tile.rotation.x=-Math.PI/2; tile.position.set(RX-HALF+(i+.5)*HALF*2,.052,0); scene.add(tile);
+  }
+  for(let i=0;i<SEGMENTS;i++) centerline.push(point(i*2*Math.PI/SEGMENTS));
+
+  const car = new THREE.Group();
+  car.position.set(RX,0,0);
+  scene.add(car);
+  const shadow = new THREE.Mesh(new THREE.CircleGeometry(2.15,24),new THREE.MeshBasicMaterial({color:0x000000,transparent:true,opacity:.28,depthWrite:false}));
+  shadow.rotation.x=-Math.PI/2; shadow.scale.set(1.4,.65,1); shadow.position.y=.026; car.add(shadow);
+  const opponents=[];
+  let variants=[];
+  function placeOpponent(ai) {
+    const angle=ai.progress;
+    ai.group.position.copy(point(angle,ai.offset));
+    ai.group.position.y=0;
+    ai.group.rotation.y=Math.atan2(RZ*Math.cos(angle),RX*Math.sin(angle));
+  }
+  async function loadCars() {
+      const [response,gltf]=await Promise.all([
+        fetch('./variants/manifest.json'),
+        new GLTFLoader().loadAsync('./roadster.glb')
+      ]);
+      if(!response.ok)throw new Error('Color manifest could not be loaded');
+      variants=await response.json();
+      if(variants.length!==10)throw new Error('Exactly 10 colors are required');
+      car.add(gltf.scene);
+      for(let i=1;i<variants.length;i++) {
+        const group=new THREE.Group();
+        const model=gltf.scene.clone(true);
+        const paint=new THREE.MeshStandardMaterial({color:variants[i].color,metalness:.48,roughness:.32});
+        model.traverse(node=>{
+          if(node.isMesh&&node.material?.name.startsWith('Ano White satin'))node.material=paint;
+        });
+        group.add(model);
+        group.add(shadow.clone());
+        scene.add(group);
+        const row=Math.ceil(i/2);
+        const ai={group,color:variants[i].color,start:-row*.28,offset:i%2?1.7:-1.7,
+          pace:16.5+(i%5)*1.4,progress:0};
+        ai.progress=ai.start;
+        placeOpponent(ai);
+        opponents.push(ai);
+      }
+  }
+
+  const obstacles=[];
+  const boostPads=[];
+  const radarDisplays=[];
+  const animatedProps=[];
+  function propLocation(angle,offset){const p=point(angle,offset);p.y=0;return p;}
+  function roadRotation(angle){const n=normalAt(angle);return Math.atan2(-n.y,n.x);}
+  function signRotation(angle){const n=normalAt(angle);return Math.atan2(-n.x,-n.y);}
+  function makeRadarScreen(group) {
+    const canvas=document.createElement('canvas');canvas.width=256;canvas.height=128;
+    const texture=new THREE.CanvasTexture(canvas);
+    texture.colorSpace=THREE.SRGBColorSpace;
+    const screen=new THREE.Mesh(new THREE.PlaneGeometry(1.55,.81),
+      new THREE.MeshBasicMaterial({map:texture,transparent:true,depthWrite:false,side:THREE.DoubleSide}));
+    screen.position.set(0,2.19,.17);group.add(screen);
+    radarDisplays.push({canvas,texture,last:-1});
+  }
+  function updateRadar(kmh) {
+    for(const display of radarDisplays){
+      if(display.last===kmh)continue;
+      display.last=kmh;
+      const ctx=display.canvas.getContext('2d');
+      ctx.fillStyle='#101d25';ctx.fillRect(0,0,256,128);
+      ctx.fillStyle=kmh>80?'#ff5342':'#ffbf3c';
+      ctx.shadowColor=ctx.fillStyle;ctx.shadowBlur=14;
+      ctx.font='bold 78px monospace';ctx.textAlign='center';
+      ctx.fillText(String(kmh).padStart(3,'0'),128,80);
+      ctx.shadowBlur=0;ctx.font='bold 20px sans-serif';ctx.fillText('KM/H',128,110);
+      display.texture.needsUpdate=true;
+    }
+  }
+  async function loadProps() {
+    const response=await fetch('./props/manifest.json');
+    if(!response.ok)throw new Error('Prop manifest could not be loaded');
+    const manifest=await response.json();
+    const entries=await Promise.all(manifest.map(async item=>[
+      item.id,(await new GLTFLoader().loadAsync('./props/'+item.glb)).scene
+    ]));
+    const models=Object.fromEntries(entries);
+    function add(id,angle,offset,rotation=0){
+      const group=models[id].clone(true);group.position.copy(propLocation(angle,offset));
+      group.rotation.y=rotation;scene.add(group);return group;
+    }
+    function hazard(id,angle,offset,radius,effect='slow',color='#ff9a50'){
+      const group=add(id,angle,offset);
+      obstacles.push({position:group.position,radius,effect,color});
+      if(id==='ufo_magnet'||id==='beach_ball')animatedProps.push({group,id});
+    }
+    for(const [angle,offset] of [[.34,-1.7],[.80,1.75],[3.6,-1.65]]){
+      hazard('traffic_cone',angle,offset,.45);
+    }
+    for(const [angle,offset] of [[1.42,1.7],[4.03,-1.6]]){
+      hazard('tire_stack',angle,offset,.6);
+    }
+    for(const [angle,offset] of [[2.55,1.15],[5.42,-1.5]]){
+      const group=add('water_barrier',angle,offset,roadRotation(angle));
+      obstacles.push({position:group.position,radius:1.35,effect:'slow',color:'#ff9a50'});
+    }
+    for(const [angle,offset] of [[.48,.7],[2.95,-1.7],[5.85,1.8]])
+      hazard('banana_peel',angle,offset,.6,'spin','#ffe35a');
+    for(const [angle,offset] of [[1.05,-2.0],[3.80,.8]])
+      hazard('rainbow_oil',angle,offset,.85,'slip','#926be0');
+    for(const [angle,offset] of [[1.56,-1.4],[5.05,2.1]])
+      hazard('rubber_duck',angle,offset,.72,'bump','#ffda45');
+    for(const [angle,offset] of [[2.0,1.1],[4.52,-1.6]])
+      hazard('sticky_donut',angle,offset,.7,'sticky','#f573b4');
+    for(const [angle,offset] of [[2.78,-1.4],[4.80,1.8]])
+      hazard('ufo_magnet',angle,offset,.82,'magnet','#45d0dc');
+    for(const [angle,offset] of [[.95,1.5],[3.28,1.3]])
+      hazard('beach_ball',angle,offset,.68,'bounce','#70b6ef');
+    for(const angle of [.72,2.3,4.35])add('chevron_sign',angle,HALF+1.1,signRotation(angle));
+    for(const angle of [.18,3.33])add('speed_limit_80',angle,HALF+1.1,signRotation(angle));
+    const radarAngle=.95;
+    makeRadarScreen(add('speed_radar',radarAngle,HALF+1.3,signRotation(radarAngle)));
+    for(const angle of [1.82,4.94]){
+      const group=add('boost_pad',angle,0,roadRotation(angle));
+      boostPads.push({position:group.position,cooldown:0});
+    }
+    updateRadar(0);
+  }
+  Promise.all([loadCars(),loadProps()]).then(()=>{status.hidden=true;}).catch(error=>{
+    status.textContent='アセットを読み込めませんでした。HTTPサーバーで開いてください。';
+    console.error(error);
+  });
+
+  const controls={throttle:false,brake:false,left:false,right:false};
+  const keyMap={ArrowUp:'throttle',KeyW:'throttle',ArrowDown:'brake',KeyS:'brake',ArrowLeft:'left',KeyA:'left',ArrowRight:'right',KeyD:'right'};
+  addEventListener('keydown',e=>{const action=keyMap[e.code];if(action){controls[action]=true;e.preventDefault();}});
+  addEventListener('keyup',e=>{const action=keyMap[e.code];if(action){controls[action]=false;e.preventDefault();}});
+  addEventListener('blur',()=>{for(const key of Object.keys(controls))controls[key]=false;});
+  for(const button of document.querySelectorAll('[data-control]')) {
+    const action=button.dataset.control;
+    button.addEventListener('pointerdown',e=>{e.preventDefault();button.setPointerCapture(e.pointerId);controls[action]=true;button.classList.add('pressed');});
+    const release=e=>{e.preventDefault();controls[action]=false;button.classList.remove('pressed');};
+    button.addEventListener('pointerup',release);
+    button.addEventListener('pointercancel',release);
+    button.addEventListener('lostpointercapture',release);
+  }
+
+  let heading=Math.PI/2, speed=0, progress=0, lastAngle=0, lap=1, elapsed=0, started=false, finished=false;
+  let collisionCooldown=0,boostTimer=0,noticeTime=0,notice='';
+  let spinTimer=0,slipTimer=0,stickyTimer=0,magnetTimer=0,magnetTarget=null;
+  function reset() {
+    car.position.set(RX,0,0);heading=Math.PI/2;speed=0;progress=0;lastAngle=0;lap=1;elapsed=0;started=false;finished=false;
+    collisionCooldown=0;boostTimer=0;noticeTime=0;notice='';
+    spinTimer=0;slipTimer=0;stickyTimer=0;magnetTimer=0;magnetTarget=null;
+    for(const pad of boostPads)pad.cooldown=0;
+    for(const ai of opponents){ai.progress=ai.start;placeOpponent(ai);}
+    if(variants.length===10)status.hidden=true;
+    hint.textContent='W / ↑ 加速　S / ↓ ブレーキ　A・D / ←・→ ハンドル';
+    for(const key of Object.keys(controls))controls[key]=false;
+    positionText.textContent='1';
+  }
+  document.querySelector('#restart').addEventListener('click',reset);
+  function nearestTrackDistance(x,z) {
+    let best=Infinity;
+    for(const p of centerline) {const dx=p.x-x,dz=p.z-z;const d=dx*dx+dz*dz;if(d<best)best=d;}
+    return Math.sqrt(best);
+  }
+  function update(dt) {
+    if(finished)return;
+    const distance=nearestTrackDistance(car.position.x,car.position.z);
+    const offroad=distance>HALF-.15;
+    if(controls.throttle&&!started){started=true;hint.textContent='3周してゴールを目指そう';}
+    if(started)elapsed+=dt;
+    collisionCooldown=Math.max(0,collisionCooldown-dt);
+    boostTimer=Math.max(0,boostTimer-dt);
+    noticeTime=Math.max(0,noticeTime-dt);
+    spinTimer=Math.max(0,spinTimer-dt);
+    slipTimer=Math.max(0,slipTimer-dt);
+    stickyTimer=Math.max(0,stickyTimer-dt);
+    magnetTimer=Math.max(0,magnetTimer-dt);
+    for(const item of animatedProps){
+      item.group.position.y=item.id==='ufo_magnet'
+        ? .12+Math.sin(elapsed*3)*.08 : Math.abs(Math.sin(elapsed*4))*.23;
+      if(item.id==='ufo_magnet')item.group.rotation.y+=dt*.6;
+    }
+    for(const pad of boostPads)pad.cooldown=Math.max(0,pad.cooldown-dt);
+    if(started)for(const ai of opponents){
+      const a=ai.progress;
+      const metersPerRadian=Math.hypot(RX*Math.sin(a),RZ*Math.cos(a));
+      ai.progress+=ai.pace/metersPerRadian*dt;
+      placeOpponent(ai);
+    }
+    const acceleration=controls.throttle?(stickyTimer>0?5:17):0;
+    const brake=controls.brake?(speed>1?29:9):0;
+    speed+=(acceleration-brake-Math.sign(speed)*(1.5+Math.abs(speed)*.12))*dt;
+    if(!controls.throttle&&!controls.brake&&Math.abs(speed)<.3)speed=0;
+    speed=THREE.MathUtils.clamp(speed,-7,stickyTimer>0?10:(offroad?13:(boostTimer>0?42:30)));
+    const steer=(controls.right?1:0)-(controls.left?1:0);
+    heading-=steer*(slipTimer>0?-1:1)*Math.sign(speed)*Math.min(Math.abs(speed)*.075,1.8)*dt;
+    if(spinTimer>0)heading+=3.0*dt;
+    const forward=new THREE.Vector3(-Math.cos(heading),0,Math.sin(heading));
+    car.position.addScaledVector(forward,speed*dt);
+    car.rotation.y=heading;
+    if(magnetTimer>0&&magnetTarget){
+      const pull=magnetTarget.clone().sub(car.position);pull.y=0;
+      if(pull.length()>0.1)car.position.addScaledVector(pull.normalize(),2.2*dt);
+    }
+    if(collisionCooldown===0&&Math.abs(speed)>2){
+      const hit=obstacles.find(item=>car.position.distanceTo(item.position)<item.radius+1.0);
+      if(hit){
+        collisionCooldown=1.3;noticeTime=2;
+        switch(hit.effect){
+          case 'spin':speed*=.6;spinTimer=1.1;notice='バナナでスピン！';break;
+          case 'slip':speed*=.85;slipTimer=2.4;notice='オイルでハンドル反転！';break;
+          case 'bump':speed*=.55;heading+=(car.position.x>hit.position.x ? .42 : -.42);
+            notice='アヒルに弾かれた！';break;
+          case 'sticky':speed*=.5;stickyTimer=2.5;notice='ドーナツで減速！';break;
+          case 'magnet':speed*=.75;magnetTimer=2.3;magnetTarget=hit.position.clone();
+            notice='UFOに吸い寄せられる！';break;
+          case 'bounce':speed*=.7;heading+=(Math.sin(elapsed*11)>0 ? .6 : -.6);
+            notice='ビーチボールに弾かれた！';break;
+          default:speed*=.38;notice='障害物に接触！';
+        }
+      }
+    }
+    for(const pad of boostPads){
+      if(started&&pad.cooldown===0&&speed>2&&car.position.distanceTo(pad.position)<1.7){
+        speed=Math.min(42,speed+10);boostTimer=2.2;pad.cooldown=4;
+        notice='BOOST!';noticeTime=1.4;
+      }
+    }
+    const angle=Math.atan2(car.position.z/RZ,car.position.x/RX);
+    let delta=angle-lastAngle;
+    if(delta>Math.PI)delta-=2*Math.PI;
+    if(delta<-Math.PI)delta+=2*Math.PI;
+    if(!offroad&&Math.abs(delta)<.2&&started)progress=Math.max(-.15,progress+delta);
+    lastAngle=angle;
+    const nextLap=Math.floor(Math.max(0,progress)/(2*Math.PI))+1;
+    if(nextLap>lap)lap=nextLap;
+    if(lap>3){lap=3;finished=true;speed=0;status.textContent=`FINISH!　${formatTime(elapsed)}　リスタートで再挑戦`;status.hidden=false;}
+    const kmh=Math.round(Math.max(0,speed)*3.6);
+    speedText.textContent=String(kmh);
+    updateRadar(kmh);
+    lapText.textContent=String(lap);
+    positionText.textContent=String(1+opponents.filter(ai=>ai.progress>progress).length);
+    timeText.textContent=formatTime(elapsed);
+    if(started&&!finished)hint.textContent=noticeTime>0?notice:
+      (offroad?'コース外！ 路面に戻ろう':'3周してゴールを目指そう');
+    return forward;
+  }
+  function formatTime(seconds){const m=Math.floor(seconds/60),s=(seconds%60).toFixed(1).padStart(4,'0');return `${m}:${s}`;}
+
+  const map=document.querySelector('#minimap');
+  const ctx=map.getContext('2d');
+  function drawMap() {
+    const w=map.width,h=map.height;
+    ctx.clearRect(0,0,w,h);ctx.fillStyle='#0b141bcc';ctx.fillRect(0,0,w,h);
+    ctx.beginPath();ctx.ellipse(w/2,h/2,64,39,0,0,2*Math.PI);ctx.strokeStyle='#53616a';ctx.lineWidth=17;ctx.stroke();
+    ctx.beginPath();ctx.ellipse(w/2,h/2,64,39,0,0,2*Math.PI);ctx.strokeStyle='#aabdc6';ctx.lineWidth=1;ctx.stroke();
+    ctx.fillStyle='#f5f6f2';ctx.fillRect(w/2+62,h/2-7,4,14);
+    for(const item of obstacles){
+      const ox=w/2+item.position.x/RX*64,oy=h/2-item.position.z/RZ*39;
+      ctx.fillStyle=item.color;ctx.fillRect(ox-2,oy-2,4,4);
+    }
+    for(const pad of boostPads){
+      const px=w/2+pad.position.x/RX*64,py=h/2-pad.position.z/RZ*39;
+      ctx.fillStyle='#53d8eb';ctx.fillRect(px-2,py-2,4,4);
+    }
+    for(const ai of opponents){
+      const ax=w/2+ai.group.position.x/RX*64,ay=h/2-ai.group.position.z/RZ*39;
+      ctx.beginPath();ctx.arc(ax,ay,2.5,0,2*Math.PI);ctx.fillStyle=ai.color;ctx.fill();
+    }
+    const x=w/2+car.position.x/RX*64,y=h/2-car.position.z/RZ*39;
+    ctx.beginPath();ctx.arc(x,y,4,0,2*Math.PI);ctx.fillStyle='#ff614d';ctx.fill();
+  }
+
+  function resize(){const w=mount.clientWidth,h=mount.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}
+  new ResizeObserver(resize).observe(mount);resize();
+  const focus=new THREE.Vector3();
+  let previous=performance.now();
+  function frame(now){
+    const dt=Math.min((now-previous)/1000,.05);previous=now;
+    const forward=update(dt)||new THREE.Vector3(-Math.cos(heading),0,Math.sin(heading));
+    const desired=car.position.clone().addScaledVector(forward,-10).add(new THREE.Vector3(0,6.3,0));
+    camera.position.lerp(desired,1-Math.exp(-4*dt));
+    focus.lerp(car.position.clone().addScaledVector(forward,4).add(new THREE.Vector3(0,1.1,0)),1-Math.exp(-5*dt));
+    camera.lookAt(focus);
+    drawMap();renderer.render(scene,camera);requestAnimationFrame(frame);
+  }
+  camera.position.set(RX,6.3,-10);focus.set(RX,1.1,4);requestAnimationFrame(frame);
+</script>
+</body>
+</html>

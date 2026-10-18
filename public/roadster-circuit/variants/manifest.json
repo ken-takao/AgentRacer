@@ -1,0 +1,62 @@
+[
+  {
+    "number": 1,
+    "name": "Pearl White",
+    "color": "#e3e6e9",
+    "file": "roadster_01_white.glb"
+  },
+  {
+    "number": 2,
+    "name": "Racing Red",
+    "color": "#ed3c45",
+    "file": "roadster_02_red.glb"
+  },
+  {
+    "number": 3,
+    "name": "Electric Blue",
+    "color": "#3b82f6",
+    "file": "roadster_03_blue.glb"
+  },
+  {
+    "number": 4,
+    "name": "Midnight Black",
+    "color": "#242934",
+    "file": "roadster_04_black.glb"
+  },
+  {
+    "number": 5,
+    "name": "Metallic Silver",
+    "color": "#b8c1c8",
+    "file": "roadster_05_silver.glb"
+  },
+  {
+    "number": 6,
+    "name": "Solar Yellow",
+    "color": "#f5cb3d",
+    "file": "roadster_06_yellow.glb"
+  },
+  {
+    "number": 7,
+    "name": "Emerald Green",
+    "color": "#2ab875",
+    "file": "roadster_07_green.glb"
+  },
+  {
+    "number": 8,
+    "name": "Sunset Orange",
+    "color": "#f37b32",
+    "file": "roadster_08_orange.glb"
+  },
+  {
+    "number": 9,
+    "name": "Violet",
+    "color": "#9867db",
+    "file": "roadster_09_purple.glb"
+  },
+  {
+    "number": 10,
+    "name": "Ice Cyan",
+    "color": "#51cadb",
+    "file": "roadster_10_cyan.glb"
+  }
+]
