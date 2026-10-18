@@ -119,8 +119,8 @@ function log(state: RaceState, event: RaceEvent): void {
   if (state.history.length > 160) state.history.splice(0, state.history.length - 160);
 }
 
-function movingSpeed(player: Racer, at: number): number {
-  return RACE_RULES.speeds[player.speedMode] * (at < player.slowedUntil - EPSILON ? RACE_RULES.collisionSpeedMultiplier : 1);
+function movingSpeed(player: Racer, at: number, origin = 0): number {
+  return RACE_RULES.speeds[player.speedMode] * (at < player.slowedUntil - origin - EPSILON ? RACE_RULES.collisionSpeedMultiplier : 1);
 }
 
 export function createRace(seed: string | number, now: number): RaceState {
@@ -178,23 +178,39 @@ export function advance(source: RaceState, now: number): RaceState {
   }
 
   if (state.phase === "racing" && state.startedAt !== null) {
-    const deadline = state.startedAt + RACE_RULES.maxRaceMs;
-    const until = Math.min(targetTime, deadline);
+    const origin = state.startedAt;
+    const deadline = origin + RACE_RULES.maxRaceMs;
+    // Integrate on a small, race-relative clock. At Unix-millisecond magnitude,
+    // rounding a gate time can leave the car just short of it and make the next
+    // event round back to the same timestamp forever.
+    cursor -= origin;
+    const until = Math.min(targetTime - origin, RACE_RULES.maxRaceMs);
     while (cursor < until - EPSILON && state.phase === "racing") {
       let nextTime = until;
-      const speeds = { red: movingSpeed(state.players.red, cursor), blue: movingSpeed(state.players.blue, cursor) };
+      const speeds = { red: movingSpeed(state.players.red, cursor, origin), blue: movingSpeed(state.players.blue, cursor, origin) };
+      const gateTimes: Partial<Record<PlayerId, number>> = {};
+      const finishTimes = { red: Infinity, blue: Infinity };
       for (const id of IDS) {
         const player = state.players[id];
-        if (player.slowedUntil > cursor + EPSILON) nextTime = Math.min(nextTime, player.slowedUntil);
+        const slowdownEndsAt = player.slowedUntil - origin;
+        if (slowdownEndsAt > cursor + EPSILON) nextTime = Math.min(nextTime, slowdownEndsAt);
         const nextGate = state.course.obstacles[player.nextObstacleIndex];
-        if (nextGate) nextTime = Math.min(nextTime, cursor + Math.max(0, nextGate.progress - player.progress) / speeds[id] * 1000);
-        nextTime = Math.min(nextTime, cursor + Math.max(0, state.course.length - player.progress) / speeds[id] * 1000);
+        if (nextGate) {
+          gateTimes[id] = cursor + Math.max(0, nextGate.progress - player.progress) / speeds[id] * 1000;
+          nextTime = Math.min(nextTime, gateTimes[id]);
+        }
+        finishTimes[id] = cursor + Math.max(0, state.course.length - player.progress) / speeds[id] * 1000;
+        nextTime = Math.min(nextTime, finishTimes[id]);
       }
 
       const seconds = (nextTime - cursor) / 1000;
       for (const id of IDS) {
         const player = state.players[id];
         player.progress = Math.min(state.course.length, player.progress + speeds[id] * seconds);
+        // A selected event is reached by construction; settle its exact distance
+        // instead of relying on the rounded multiply/divide to reproduce it.
+        if (gateTimes[id] === nextTime) player.progress = Math.max(player.progress, state.course.obstacles[player.nextObstacleIndex].progress);
+        if (finishTimes[id] === nextTime) player.progress = state.course.length;
         const difference = player.targetLane - player.lane;
         player.lane += Math.sign(difference) * Math.min(Math.abs(difference), RACE_RULES.laneChangePerSecond * seconds);
       }
@@ -208,12 +224,12 @@ export function advance(source: RaceState, now: number): RaceState {
           player.nextObstacleIndex++;
           if (Math.abs(player.lane - gate.blockedLane) <= RACE_RULES.collisionHalfWidth + EPSILON) {
             player.collisionCount++;
-            player.slowedUntil = cursor + RACE_RULES.collisionSlowMs;
-            log(state, { at: cursor, type: "collision", playerId: id, obstacleId: gate.id });
+            player.slowedUntil = origin + cursor + RACE_RULES.collisionSlowMs;
+            log(state, { at: origin + cursor, type: "collision", playerId: id, obstacleId: gate.id });
           }
         }
       }
-      if (IDS.some((id) => state.players[id].progress >= state.course.length - EPSILON)) finish(state, cursor, "finish_line");
+      if (IDS.some((id) => state.players[id].progress >= state.course.length - EPSILON)) finish(state, origin + cursor, "finish_line");
     }
     if (state.phase === "racing" && targetTime >= deadline) finish(state, deadline, "time_limit");
   }

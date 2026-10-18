@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { advance, applyInput, cancelRace, createRace, publicView, RACE_RULES, RaceRuleError } from "../lib/race-engine.ts";
 import type { RaceInput, RaceState } from "../lib/race-engine.ts";
 
 const raceAt = (elapsedMs: number) => RACE_RULES.countdownMs + elapsedMs;
 
-function ready(seed = "test"): RaceState {
-  let state = createRace(seed, 0);
+function ready(seed = "test", epoch = 0): RaceState {
+  let state = createRace(seed, epoch);
   for (const id of ["red", "blue"] as const) {
-    state = applyInput(state, id, { type: "join" }, 0);
-    state = applyInput(state, id, { type: "ready" }, 0);
+    state = applyInput(state, id, { type: "join" }, epoch);
+    state = applyInput(state, id, { type: "ready" }, epoch);
   }
   return state;
 }
@@ -125,5 +127,88 @@ assert.equal(cancelRace(cancelled, 300_000).finishedAt, raceAt(5_000), "repeat s
 assert.equal(publicView(cancelled).remainingMs, 0);
 assert.throws(() => applyInput(cancelled, "red", { type: "ready" }, raceAt(15_000)), RaceRuleError);
 assert.equal(cancelRace(winner, 2_000_000).winner, "red", "stop after the finish preserves the winner");
+
+// A synchronous infinite loop cannot be interrupted by a test-runner timer.
+// Keep real-world timestamp regressions in a child with an OS-enforced timeout.
+if (!process.argv.includes("--epoch-clock-regressions")) {
+  const child = spawnSync(process.execPath, ["--experimental-strip-types", fileURLToPath(import.meta.url), "--epoch-clock-regressions"], {
+    encoding: "utf8", timeout: 5_000,
+  });
+  assert.equal(child.error, undefined, `epoch-clock regressions must terminate: ${child.error?.message}`);
+  assert.equal(child.status, 0, `epoch-clock regressions failed:\n${child.stdout}\n${child.stderr}`);
+} else {
+  // Minimized state from the production request that exhausted the worker's
+  // CPU limit. Only race physics are retained; there are no player credentials.
+  const recovered = createRace("production-clock-regression", 1_792_304_450_711);
+  recovered.phase = "racing";
+  recovered.startedAt = recovered.countdownEndsAt = 1_792_304_525_129;
+  recovered.updatedAt = 1_792_304_530_144;
+  recovered.course.obstacles = ([1, 0, 1, 2, 1, 0, 1] as const).map((blockedLane, index) => ({
+    id: `gate-${index + 1}`, progress: (index + 1) * 25, blockedLane,
+  }));
+  for (const id of ["red", "blue"] as const) {
+    Object.assign(recovered.players[id], { joined: true, ready: true, lane: 2, targetLane: 2, speedMode: "turbo" });
+  }
+  recovered.players.red.progress = 9.027000000000001;
+  recovered.players.blue.progress = 12.537500000000001;
+  const completed = advance(recovered, 1_792_304_744_960);
+  assert.equal(completed.phase, "finished");
+  assert.equal(completed.winner, "blue");
+  assert.equal(completed.finishedAt, 1_792_304_607_529);
+  assert.equal(completed.players.blue.progress, 200);
+  assert.ok(Math.abs(completed.players.red.progress - 196.4895) < 0.000001);
+  assert.equal(completed.players.red.collisionCount, 1);
+  assert.equal(completed.players.blue.collisionCount, 1);
+
+  const epoch = 1_792_304_000_000;
+  for (const modes of [["normal", "normal"], ["turbo", "turbo"], ["normal", "turbo"], ["turbo", "normal"]] as const) {
+    const setup = (at: number) => {
+      let state = ready("epoch-hang", at);
+      state = applyInput(state, "red", { type: "speed", speed: modes[0] }, at);
+      return applyInput(state, "blue", { type: "speed", speed: modes[1] }, at);
+    };
+    const zeroBased = advance(setup(0), 200_000);
+    const initial = setup(epoch);
+    const epochBased = advance(initial, epoch + 200_000);
+    let polled = initial;
+    for (let elapsed = 250; elapsed <= 200_000; elapsed += 250) polled = advance(polled, epoch + elapsed);
+    assert.equal(epochBased.phase, "finished");
+    assert.equal(epochBased.winner, zeroBased.winner, "clock origin cannot change the winner");
+    assert.equal(polled.winner, epochBased.winner, "sparse polling cannot change the winner");
+    assert.ok(Math.abs(epochBased.finishedAt! - epoch - zeroBased.finishedAt!) < 0.002);
+    assert.ok(Math.abs(polled.finishedAt! - epochBased.finishedAt!) < 0.002);
+    for (const id of ["red", "blue"] as const) {
+      assert.equal(epochBased.players[id].nextObstacleIndex, zeroBased.players[id].nextObstacleIndex);
+      assert.equal(polled.players[id].nextObstacleIndex, epochBased.players[id].nextObstacleIndex);
+      assert.equal(epochBased.players[id].collisionCount, zeroBased.players[id].collisionCount);
+      assert.equal(polled.players[id].collisionCount, epochBased.players[id].collisionCount);
+      assert.ok(Math.abs(epochBased.players[id].progress - zeroBased.players[id].progress) < 0.000002);
+      assert.ok(Math.abs(polled.players[id].progress - epochBased.players[id].progress) < 0.000002);
+    }
+  }
+
+  // Restore a car immediately before a gate/finish: the old absolute clock
+  // rounded this positive crossing duration to zero and never advanced again.
+  for (const boundary of [25, 200]) {
+    let nearBoundary = advance(ready("near-boundary", epoch), epoch + RACE_RULES.countdownMs);
+    nearBoundary.updatedAt += 13_888;
+    nearBoundary.players.red.progress = boundary - 0.0000002;
+    nearBoundary.players.blue.progress = boundary - 0.0000002;
+    nearBoundary.course.obstacles = boundary === 25 ? [{ id: "near-gate", progress: boundary, blockedLane: 0 }] : [];
+    const settled = advance(nearBoundary, nearBoundary.updatedAt + 1_000);
+    if (boundary === 25) {
+      assert.equal(settled.players.red.nextObstacleIndex, 1);
+      assert.equal(settled.players.blue.nextObstacleIndex, 1);
+      assert.equal(settled.players.red.collisionCount, 1);
+      assert.equal(settled.players.blue.collisionCount, 0);
+      assert.ok(settled.players.red.progress > boundary);
+    } else {
+      assert.equal(settled.phase, "finished");
+      assert.equal(settled.winner, "tie", "both cars settle the same finish boundary without player-order bias");
+      assert.equal(settled.players.red.progress, 200);
+      assert.equal(settled.players.blue.progress, 200);
+    }
+  }
+}
 
 console.log("race-engine: deterministic clocks, readiness, collision, first finish, deadline, validation, and view checks passed");
