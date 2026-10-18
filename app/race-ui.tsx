@@ -3,6 +3,7 @@
 import { Component, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import "./spectator-stage.css";
+import "./race-effects.css";
 import { requestRaceJson, raceRetryDelay } from "../lib/race-api";
 import { RaceTimeline } from "../lib/race-timeline";
 import { sanitizeDriveDecisionFeed, type DriveAction, type DriveDecision, type DriveDecisionFeed } from "../lib/drive-decision-feed";
@@ -17,11 +18,13 @@ const RaceCircuit3D = lazy(() => import("./race-circuit-3d").then(module => ({ d
 
 type PlayerId = "red" | "blue";
 type Speed = "slow" | "normal" | "turbo";
-type Obstacle = { id: string; progress: number; blockedLane: 0 | 1 | 2; junctionId?: string; route?: RouteChoice };
+type Obstacle = { id: string; progress: number; blockedLane: 0 | 1 | 2; assetId?: string; placedAt?: number; junctionId?: string; route?: RouteChoice };
 type Driver = {
   id: PlayerId; name: string; joined: boolean; ready: boolean; progress: number;
   lane: number; targetLane: 0 | 1 | 2; speedMode: Speed; speed: number;
   collisionCount: number; slowedUntil: number; upcomingObstacles: Obstacle[];
+  jumpStartedAt?: number; jumpEndsAt?: number; jumpReadyAt?: number; jumpAvailable?: boolean;
+  spinStartedAt?: number; spinEndsAt?: number; spinProgress?: number; spinLane?: number;
   routeChoices?: Record<string, RouteChoice>; carCollisions?: number; lastCarCollisionAt?: number; laneVelocity?: number;
 };
 type Race = {
@@ -33,7 +36,7 @@ type Race = {
 };
 type Telemetry = { status: string; frameAt: number | null; actions: number; sessionId?: string };
 type RaceResponse = { state: Race; telemetry: Record<PlayerId, Telemetry> };
-type Input = { type: "join" | "ready" } | { type: "lane"; lane: 0 | 1 | 2 } | { type: "speed"; speed: Speed } | { type: "route"; junctionId: string; route: RouteChoice };
+type Input = { type: "join" | "ready" | "jump" } | { type: "lane"; lane: 0 | 1 | 2 } | { type: "speed"; speed: Speed } | { type: "route"; junctionId: string; route: RouteChoice };
 const COLORS = { red: "#ff5d58", blue: "#68a4ff" };
 const NAMES = { red: "SCARLET", blue: "COBALT" };
 const PHASE_LABELS = { lobby: "ドライバー接続待ち", countdown: "スタートまもなく", racing: "レース進行中", finished: "チェッカーフラッグ", cancelled: "レース中止" };
@@ -64,10 +67,20 @@ function useRace(id: string, interval = 500) {
   const [receivedAt, setReceivedAt] = useState(0);
   const [retryVersion, setRetryVersion] = useState(0);
   const timeline = useRef(new RaceTimeline<Race>());
+  const lastAcceptedAt = useRef(-Infinity);
   const sampleRace = useCallback((timestamp: number) => timeline.current.sample(timestamp), []);
   const retry = useCallback(() => setRetryVersion(v => v + 1), []);
+  const accept = useCallback((response: RaceResponse) => {
+    if (response.state.updatedAt < lastAcceptedAt.current) return;
+    lastAcceptedAt.current = response.state.updatedAt;
+    const received = performance.now();
+    timeline.current.push(response.state, received);
+    setData(previous => previous && previous.state.updatedAt > response.state.updatedAt ? previous : response);
+    setReceivedAt(received);
+  }, []);
   useEffect(() => {
     timeline.current.clear();
+    lastAcceptedAt.current = -Infinity;
     setData(null);
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -81,9 +94,7 @@ function useRace(id: string, interval = 500) {
         failures = 0;
         if (json.state.phase === "finished" || json.state.phase === "cancelled") nextInterval = 5000;
         if (!disposed) {
-          const received = performance.now();
-          timeline.current.push(json.state, received);
-          setData(json); setReceivedAt(received); setError("");
+          accept(json); setError("");
         }
       } catch (e) {
         failure = e; failures++;
@@ -93,8 +104,8 @@ function useRace(id: string, interval = 500) {
     }
     void poll();
     return () => { disposed = true; abort.abort(); clearTimeout(timer); };
-  }, [id, interval, retryVersion]);
-  return { data, error, receivedAt, retry, sampleRace };
+  }, [id, interval, retryVersion, accept]);
+  return { data, error, receivedAt, retry, sampleRace, accept };
 }
 
 function useRaceClockNow(race: Race | undefined, receivedAt: number) {
@@ -326,7 +337,7 @@ function DriverCard({ id, driver, telemetry, phase }: { id: PlayerId; driver: Dr
 const DECISION_LABELS: Record<DriveAction, string> = {
   lane_left: "左レーンへ", lane_center: "中央レーンへ", lane_right: "右レーンへ",
   speed_slow: "減速する", speed_normal: "通常速度へ", speed_turbo: "ターボで加速",
-  route_left: "左の分岐へ", route_right: "右の分岐へ", wait: "今の操作を維持",
+  route_left: "左の分岐へ", route_right: "右の分岐へ", jump: "ジャンプ", wait: "今の操作を維持",
 };
 function DecisionStrip({ decision, ended, unavailable }: { decision?: DriveDecision | null; ended: boolean; unavailable: boolean }) {
   const age = decision ? Math.max(0, Math.floor((Date.now() - decision.decidedAt) / 1000)) : 0;
@@ -424,22 +435,26 @@ export function SpectatorScreen({ id }: { id: string }) {
 }
 
 export function DriverScreen({ id, player }: { id: string; player: PlayerId }) {
-  const { data, error, receivedAt, retry } = useRace(id, 300);
+  const { data, error, receivedAt, retry, accept } = useRace(id, 300);
   const now = useRaceClockNow(data?.state, receivedAt);
   const race = data?.state ? { ...data.state, now } : null;
   const token = useRef("");
+  const jumpPending = useRef(false);
   const [tokenReady, setTokenReady] = useState(false);
   const [inputError, setInputError] = useState("");
   const [sending, setSending] = useState(false);
   const sendInput = useCallback(async (input: Input) => {
     if (!token.current) { setInputError("参加用URLからこの画面を開いてください。"); return; }
+    if (input.type === "jump" && jumpPending.current) return;
+    if (input.type === "jump") jumpPending.current = true;
     setSending(true);
     try {
-      await requestRaceJson(`/api/races/${enc(id)}/input`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token.current}` }, body: JSON.stringify({ player, input }) });
+      const response = await requestRaceJson<RaceResponse>(`/api/races/${enc(id)}/input`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token.current}` }, body: JSON.stringify({ player, input }) }, isRaceResponse);
+      accept(response);
       setInputError("");
     } catch (e) { setInputError(e instanceof Error ? e.message : "操作を送信できませんでした"); }
-    finally { setSending(false); }
-  }, [id, player]);
+    finally { if (input.type === "jump") jumpPending.current = false; setSending(false); }
+  }, [id, player, accept]);
   useEffect(() => {
     try { token.current = decodeURIComponent(window.location.hash.slice(1)); } catch { token.current = ""; }
     setTokenReady(Boolean(token.current));
@@ -447,16 +462,21 @@ export function DriverScreen({ id, player }: { id: string; player: PlayerId }) {
   }, [sendInput]);
   const driver = race?.players[player];
   const targetLane = driver?.targetLane ?? 1;
+  const airborne = race?.phase === "racing" && !!driver && now < (driver.jumpEndsAt ?? 0);
+  const spinning = race?.phase === "racing" && !!driver && now < (driver.spinEndsAt ?? 0);
+  const jumpWait = Math.max(0, (driver?.jumpReadyAt ?? 0) - now);
+  const canJump = tokenReady && !!driver?.joined && race?.phase === "racing" && !airborne && !spinning && jumpWait === 0 && !jumpPending.current;
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (!tokenReady || race?.phase === "finished" || race?.phase === "cancelled") return;
       if (e.repeat || (e.target instanceof HTMLElement && ["INPUT", "TEXTAREA"].includes(e.target.tagName))) return;
+      if (e.code === "Space" && canJump) { e.preventDefault(); void sendInput({ type: "jump" }); }
       if (e.key === "ArrowLeft") { e.preventDefault(); void sendInput({ type: "lane", lane: Math.max(0, targetLane - 1) as 0 | 1 | 2 }); }
       if (e.key === "ArrowRight") { e.preventDefault(); void sendInput({ type: "lane", lane: Math.min(2, targetLane + 1) as 0 | 1 | 2 }); }
     }
     window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
-  }, [sendInput, targetLane, tokenReady, race?.phase]);
+  }, [sendInput, targetLane, tokenReady, race?.phase, canJump]);
   const next = driver?.upcomingObstacles.find(o => o.progress >= driver.progress);
   const countdown = race?.countdownEndsAt ? Math.max(0, Math.ceil((race.countdownEndsAt - race.now) / 1000)) : 0;
-  return <div className={`driver-page ${player}`}><header className="cockpit-header"><Brand /><div><span className="driver-badge" style={{ color: COLORS[player] }}>YOU ARE {NAMES[player]}</span><span className="live-pill"><i />PLAYER {player === "red" ? "01" : "02"}</span></div></header><main className="cockpit-main">{!race || !driver ? <LoadingRace error={error} onRetry={retry} /> : <><div className="cockpit-title"><div><span className="eyebrow">REAL-TIME DRIVER COCKPIT</span><h1>{race.phase === "finished" ? "FINISHED" : race.phase === "cancelled" ? "RACE STOPPED" : race.phase === "countdown" ? `START IN ${countdown}` : race.phase === "racing" ? "RACE IN PROGRESS" : "READY TO RACE?"}</h1></div><div className="cockpit-distance"><strong>{driver.progress.toFixed(0)}<small> / {race.course.length}</small></strong><span>DISTANCE / UNITS</span></div></div>{(inputError || error || !tokenReady) && <div className="cockpit-error" role="alert">{inputError || error || "参加用URLが必要です。オペレーターから割り当てられたURLを開いてください。"}</div>}<div className="cockpit-grid"><section className="road-panel"><div className="road-heading"><span><CircleDot size={14} />FRONT VIEW</span><strong>60 UNITS AHEAD</strong></div><TacticalRoad race={race} player={player} /><RivalRadar race={race} player={player} /><CourseMap race={race} compact /><div className="obstacle-warning"><span className="obstacle-key" /><span>{next ? <>NEXT OBSTACLE: <b>{["LEFT", "CENTER", "RIGHT"][next.blockedLane]}</b> · {Math.max(0, next.progress - driver.progress).toFixed(0)} UNITS AHEAD</> : "CLEAR ROAD AHEAD"}</span></div></section><section className="controls-panel"><div className="ready-row"><div><span className="control-label">01 / JOIN THE GRID</span><p>{driver.ready ? "準備完了。両者READYで自動スタート。" : "READYを押してレースに参加。"}</p></div><button className={`ready-button ${driver.ready ? "is-ready" : ""}`} disabled={!tokenReady || !driver.joined || driver.ready || race.phase !== "lobby"} onClick={() => void sendInput({ type: "ready" })}>{driver.ready ? <><Check size={20} />READY</> : <>READY<Flag size={18} /></>}</button></div><RouteControls race={race} player={player} enabled={tokenReady && driver.joined && !sending && race.phase !== "finished" && race.phase !== "cancelled"} onChoose={(junctionId, route) => void sendInput({ type: "route", junctionId, route })} /><div className="control-block"><div className="control-block-heading"><span className="control-label">02 / CHOOSE YOUR LANE</span><span>障害物のないレーンへ</span></div><div className="lane-buttons">{([0, 1, 2] as const).map((lane, i) => <button key={lane} aria-pressed={driver.targetLane === lane} disabled={!tokenReady || (race.phase === "finished" || race.phase === "cancelled")} className={driver.targetLane === lane ? "selected" : ""} onClick={() => void sendInput({ type: "lane", lane })}>{i === 0 ? <ArrowLeft size={24} /> : i === 1 ? <ArrowDown size={24} style={{ transform: "rotate(180deg)" }} /> : <ArrowRight size={24} />}<b>{["LEFT", "CENTER", "RIGHT"][i]}</b><span>{["左レーン", "中央レーン", "右レーン"][i]}</span></button>)}</div></div><div className="control-block speed-control"><div className="control-block-heading"><span className="control-label">03 / SET YOUR SPEED</span><span>設定は次の操作まで継続</span></div><div className="speed-buttons">{(["slow", "normal", "turbo"] as Speed[]).map(speed => <button key={speed} aria-pressed={driver.speedMode === speed} disabled={!tokenReady || (race.phase === "finished" || race.phase === "cancelled")} className={driver.speedMode === speed ? "selected" : ""} onClick={() => void sendInput({ type: "speed", speed })}>{speed === "turbo" ? <Zap size={18} /> : <Gauge size={18} />}<b>{speed.toUpperCase()}</b></button>)}</div></div><div className="cockpit-stats"><div><span>SPEED</span><strong>{driver.speed.toFixed(1)}<small> u/s</small></strong></div><div><span>COLLISIONS</span><strong>{driver.collisionCount}</strong></div><div><span>STATUS</span><strong className="cockpit-status">{driver.slowedUntil > race.now ? "SLOWED" : sending ? "SENDING" : race.phase === "racing" ? "DRIVING" : race.phase.toUpperCase()}</strong></div></div><p className="driver-tip">相手の車と黄色い障害物を避けてください。接触すると両車が減速します。分岐は進入前に選び、合流にも注意。操作を止めても車は進みます。</p></section></div><div className="cockpit-bottom"><Progress race={race} />{(race.phase === "finished" || race.phase === "cancelled") && <RaceOutcome race={race} />}</div></>}</main></div>;
+  return <div className={`driver-page ${player}`}><header className="cockpit-header"><Brand /><div><span className="driver-badge" style={{ color: COLORS[player] }}>YOU ARE {NAMES[player]}</span><span className="live-pill"><i />PLAYER {player === "red" ? "01" : "02"}</span></div></header><main className="cockpit-main">{!race || !driver ? <LoadingRace error={error} onRetry={retry} /> : <><div className="cockpit-title"><div><span className="eyebrow">REAL-TIME DRIVER COCKPIT</span><h1>{race.phase === "finished" ? "FINISHED" : race.phase === "cancelled" ? "RACE STOPPED" : race.phase === "countdown" ? `START IN ${countdown}` : race.phase === "racing" ? "RACE IN PROGRESS" : "READY TO RACE?"}</h1></div><div className="cockpit-distance"><strong>{driver.progress.toFixed(0)}<small> / {race.course.length}</small></strong><span>DISTANCE / UNITS</span></div></div>{(inputError || error || !tokenReady) && <div className="cockpit-error" role="alert">{inputError || error || "参加用URLが必要です。オペレーターから割り当てられたURLを開いてください。"}</div>}<div className="cockpit-grid"><section className="road-panel"><div className="road-heading"><span><CircleDot size={14} />FRONT VIEW</span><strong>60 UNITS AHEAD</strong></div><TacticalRoad race={race} player={player} /><RivalRadar race={race} player={player} /><CourseMap race={race} compact /><div className="obstacle-warning"><span className="obstacle-key" /><span>{next ? <>NEXT OBSTACLE: <b>{["LEFT", "CENTER", "RIGHT"][next.blockedLane]}</b> · {Math.max(0, next.progress - driver.progress).toFixed(0)} UNITS AHEAD</> : "CLEAR ROAD AHEAD"}</span></div></section><section className="controls-panel"><div className="ready-row"><div><span className="control-label">01 / JOIN THE GRID</span><p>{driver.ready ? "準備完了。両者READYで自動スタート。" : "READYを押してレースに参加。"}</p></div><button className={`ready-button ${driver.ready ? "is-ready" : ""}`} disabled={!tokenReady || !driver.joined || driver.ready || race.phase !== "lobby"} onClick={() => void sendInput({ type: "ready" })}>{driver.ready ? <><Check size={20} />READY</> : <>READY<Flag size={18} /></>}</button></div><RouteControls race={race} player={player} enabled={tokenReady && driver.joined && !sending && race.phase !== "finished" && race.phase !== "cancelled"} onChoose={(junctionId, route) => void sendInput({ type: "route", junctionId, route })} /><div className="control-block"><div className="control-block-heading"><span className="control-label">02 / CHOOSE YOUR LANE</span><span>障害物のないレーンへ</span></div><div className="lane-buttons">{([0, 1, 2] as const).map((lane, i) => <button key={lane} aria-pressed={driver.targetLane === lane} disabled={!tokenReady || (race.phase === "finished" || race.phase === "cancelled")} className={driver.targetLane === lane ? "selected" : ""} onClick={() => void sendInput({ type: "lane", lane })}>{i === 0 ? <ArrowLeft size={24} /> : i === 1 ? <ArrowDown size={24} style={{ transform: "rotate(180deg)" }} /> : <ArrowRight size={24} />}<b>{["LEFT", "CENTER", "RIGHT"][i]}</b><span>{["左レーン", "中央レーン", "右レーン"][i]}</span></button>)}</div></div><div className="control-block speed-control"><div className="control-block-heading"><span className="control-label">03 / SET YOUR SPEED</span><span>設定は次の操作まで継続</span></div><div className="speed-buttons">{(["slow", "normal", "turbo"] as Speed[]).map(speed => <button key={speed} aria-pressed={driver.speedMode === speed} disabled={!tokenReady || (race.phase === "finished" || race.phase === "cancelled")} className={driver.speedMode === speed ? "selected" : ""} onClick={() => void sendInput({ type: "speed", speed })}>{speed === "turbo" ? <Zap size={18} /> : <Gauge size={18} />}<b>{speed.toUpperCase()}</b></button>)}</div></div><div className="jump-control"><div><span className="control-label">04 / AIR JUMP</span><p>{spinning ? `SPIN · 残り ${Math.max(0, ((driver.spinEndsAt ?? 0) - now) / 1000).toFixed(1)} 秒` : airborne ? "AIRBORNE · 空中の障害物を回避" : "0.8秒ジャンプ · 着地から2秒で再充填"}</p></div><button className="jump-button" disabled={!canJump || sending} onClick={() => void sendInput({ type: "jump" })} aria-label="JUMP"><ArrowUpRight size={22} /><b>JUMP</b><small>{race.phase !== "racing" ? "RACE ONLY" : airborne ? `AIR ${Math.max(0, ((driver.jumpEndsAt ?? 0) - now) / 1000).toFixed(1)}s` : spinning ? "SPINNING" : jumpWait > 0 ? `CHARGE ${(jumpWait / 1000).toFixed(1)}s` : race.phase === "racing" ? "READY / SPACE" : "RACE ONLY"}</small></button></div><div className="cockpit-stats"><div><span>SPEED</span><strong>{driver.speed.toFixed(1)}<small> u/s</small></strong></div><div><span>COLLISIONS</span><strong>{driver.collisionCount}</strong></div><div><span>STATUS</span><strong className="cockpit-status">{spinning ? "SPINNING" : airborne ? "AIRBORNE" : driver.slowedUntil > race.now ? "SLOWED" : sending ? "SENDING" : race.phase === "racing" ? "DRIVING" : race.phase.toUpperCase()}</strong></div></div><p className="driver-tip">車や障害物を回避。バナナに触れると1.2秒停止・スピンします。JUMPで障害物を飛び越えられます。スピン中のレーン・速度設定は回復後に反映。分岐は進入前に選択。</p></section></div><div className="cockpit-bottom"><Progress race={race} />{(race.phase === "finished" || race.phase === "cancelled") && <RaceOutcome race={race} />}</div></>}</main></div>;
 }

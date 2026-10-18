@@ -2,12 +2,24 @@
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agent Grand Prix — Operator</title>
 <style>
 :root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#080c13;color:#eaf1f8}*{box-sizing:border-box}body{margin:0;padding:40px 24px}main{max-width:1060px;margin:auto}.eyebrow{font:700 12px ui-monospace,monospace;letter-spacing:.2em;color:#85e1e1}h1{font-size:clamp(32px,6vw,60px);letter-spacing:-.05em;margin:15px 0}p{color:#94a5b8;line-height:1.8}.actions{display:flex;gap:12px;flex-wrap:wrap;margin:28px 0}button,a.button{border:0;border-radius:10px;padding:14px 21px;font:700 14px inherit;cursor:pointer;text-decoration:none}button.primary{background:#b9f560;color:#14200a}button.secondary,a.button{background:#202b3a;color:#eaf1f8}button:disabled{opacity:.4;cursor:not-allowed}.status{border:1px solid #263447;border-radius:16px;padding:24px;margin-bottom:20px;background:#101722}.status-head{display:flex;justify-content:space-between;gap:15px;align-items:center}.pill{font:700 12px ui-monospace,monospace;color:#b9f560;background:#1c2d22;padding:7px 10px;border-radius:20px}.cards{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{background:#101722;border:1px solid #263447;border-radius:16px;padding:24px;min-width:0}.card.red{border-top:3px solid #ff6868}.card.blue{border-top:3px solid #6aaaff}.card h2{font-size:18px;margin:0 0 20px}.metrics{display:flex;gap:30px;margin-bottom:15px}.metrics strong{display:block;font:700 30px ui-monospace,monospace}.metrics span{color:#94a5b8;font-size:12px}.session{font:11px ui-monospace,monospace;overflow-wrap:anywhere;color:#8e9fb4}.log{margin-top:20px;border:1px solid #263447;border-radius:16px;overflow:hidden}.log h2{font-size:14px;margin:0;padding:18px 24px;border-bottom:1px solid #263447}.log-list{height:290px;overflow:auto;padding:12px 24px;display:flex;flex-direction:column-reverse;gap:10px;font:12px/1.6 ui-monospace,monospace}.log-line{display:flex;gap:14px}.log-time{color:#65778d;flex-shrink:0}.log-message{overflow-wrap:anywhere}.error{color:#ffa39d;white-space:pre-wrap}.note{font-size:12px}.hidden{display:none!important}@media(max-width:600px){body{padding:28px 16px}.cards{grid-template-columns:1fr}.metrics{gap:25px}.status-head{align-items:flex-start;flex-direction:column}}
+.placement{margin:20px 0;padding:24px;border:1px solid #405338;border-radius:16px;background:linear-gradient(120deg,#162219,#101722 70%)}.placement h2{margin:4px 0 8px;font-size:22px}.placement-head{display:flex;justify-content:space-between;gap:18px;align-items:center}.placement-head p{margin:0}.placement-grid{display:grid;grid-template-columns:128px 1fr;gap:22px;margin-top:20px}.prop-preview{display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0b1218;border-radius:14px;border:1px solid #2e4132;padding:12px;text-align:center}.prop-preview img{width:96px;height:96px;object-fit:contain}.prop-preview span{font-size:12px;color:#c3d3bb}.placement-fields{display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:14px;align-items:end}.field{display:flex;flex-direction:column;gap:7px;font-size:12px;color:#c1cbd5}.field select,.field input{width:100%;min-width:0;padding:11px 10px;background:#080e16;border:1px solid #37475a;border-radius:8px;color:#edf5fb;font:inherit;font-size:14px}.field select:focus,.field input:focus{outline:2px solid #b9f560;outline-offset:2px}.placement-bottom{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:14px}.placement-bottom button{padding:12px 18px}.placement-bottom .field{min-width:170px;flex:1}.placement-note{margin:12px 0 0;font-size:12px}.placement-feedback{min-height:24px;margin-top:10px;font-size:13px;color:#b9f560;white-space:pre-wrap}.placement-feedback.error{color:#ffa39d}.course-board{margin-top:18px}.course-labels{display:flex;justify-content:space-between;color:#8ea58f;font:11px ui-monospace,monospace;margin-bottom:6px}.course-lanes{height:84px;background:#091017;border:1px solid #334535;border-radius:9px;position:relative;overflow:hidden;cursor:crosshair}.course-lane{position:absolute;width:100%;height:28px;border-bottom:1px dashed #243137}.course-lane:last-child{border-bottom:0}.course-lane-name{position:absolute;left:6px;top:7px;color:#789087;font:10px ui-monospace,monospace;z-index:1}.course-marker{position:absolute;top:7px;width:10px;height:14px;transform:translateX(-50%);border-radius:3px;background:#64706f;pointer-events:none}.course-marker.car{width:14px;background:#ff6969;z-index:3;box-shadow:0 0 8px #ff69696b}.course-marker.car.blue{background:#6aaaff;box-shadow:0 0 8px #6aaaff6b}.course-marker.proposed{top:1px;width:26px;height:26px;border:2px dashed #b9f560;background:#b9f56022;z-index:4}.course-marker.prop{top:1px;width:26px;height:26px;object-fit:contain;background:transparent}.course-zone{position:absolute;height:100%;top:0;background:#b9f56009;pointer-events:none}.placement-progress{font:12px/1.7 ui-monospace,monospace;color:#bed1c0;margin-top:8px}@media(max-width:760px){.placement-fields{grid-template-columns:1fr 1fr}.placement-fields .field:first-child{grid-column:1/-1}.placement-grid{grid-template-columns:100px 1fr;gap:14px}.prop-preview img{width:78px;height:78px}}@media(max-width:460px){.placement{padding:18px}.placement-head{align-items:flex-start;flex-direction:column}.placement-grid{grid-template-columns:1fr}.prop-preview{flex-direction:row;gap:14px}.placement-bottom button{flex:1}.placement-bottom .field{flex-basis:100%}}
 </style></head><body><main>
 <div class="eyebrow">LOCAL OPERATOR · 2 INDEPENDENT BROWSERS</div><h1>Agent Grand Prix</h1>
 <p>Decisions APIが進路を選び、2つのComputer Useエージェントが画面を操作します。<br>この画面から起動し、公開の観戦ページでレースと取得画面を見られます。</p>
 <div class="actions"><button id="start" class="primary">2つのエージェントを起動</button><button id="stop" class="secondary" disabled>レースを停止</button><button id="reset" class="secondary" disabled>表示をリセット</button><a id="spectator" class="button hidden" target="_blank" rel="noopener noreferrer">観戦ページを開く ↗</a></div>
 <p id="restart-help" class="note">開始すると新しい観戦タブを開きます。2つのセッションは毎回新しく作成します。</p><section class="status"><div class="status-head"><strong id="message">状態を取得しています。</strong><span id="stage" class="pill">IDLE</span></div><p id="phase">GAME —</p><p id="narration" class="note">AI実況 · レース開始時に接続</p><div id="error" class="error"></div></section>
 <section class="cards"><article class="card red"><h2>RED DRIVER</h2><div class="metrics"><div><strong id="red-actions">0</strong><span>ブラウザー操作</span></div><div><strong id="red-images">0</strong><span>取得画面</span></div></div><p id="red-decision" class="note">Decisions API · 判断待ち</p><p id="red-status">待機中</p><div id="red-session" class="session">—</div><p id="red-cleanup" class="note"></p></article><article class="card blue"><h2>BLUE DRIVER</h2><div class="metrics"><div><strong id="blue-actions">0</strong><span>ブラウザー操作</span></div><div><strong id="blue-images">0</strong><span>取得画面</span></div></div><p id="blue-decision" class="note">Decisions API · 判断待ち</p><p id="blue-status">待機中</p><div id="blue-session" class="session">—</div><p id="blue-cleanup" class="note"></p></article></section>
+<section class="placement" aria-labelledby="placement-title">
+  <div class="placement-head"><div><div class="eyebrow">HUMAN VS AGENTS</div><h2 id="placement-title">コースに障害物を設置</h2><p class="note">走るAIに、人間からのチャレンジ。</p></div><span class="pill" id="placement-count">0 / 20</span></div>
+  <div class="placement-grid"><div class="prop-preview"><img id="prop-image" alt="選択した障害物" hidden><span id="prop-effect">素材を読み込み中…</span></div><div>
+    <div class="placement-fields"><label class="field">障害物<select id="prop-type" aria-label="障害物の種類" disabled></select></label><label class="field">レーン<select id="prop-lane"><option value="0">左</option><option value="1" selected>中央</option><option value="2">右</option></select></label><label class="field">位置（コース距離）<input id="prop-progress" type="number" min="0" step="0.1" placeholder="レース開始後に設定"></label></div>
+    <div class="placement-bottom"><label class="field">設置する分岐<select id="prop-route" disabled><option value="">メインコース</option></select></label><button class="secondary" id="prop-ahead" disabled>先頭の20先</button><button class="primary" id="prop-place" disabled>レース開始を待っています</button></div>
+    <p class="placement-note" id="placement-rules">両車の12以上前方・同じレーンと分岐では間隔4以上・最大20個・設置間隔1.5秒。</p>
+  </div></div>
+  <div class="course-board"><div class="course-labels"><span>START</span><span id="placement-road">設置位置をクリックでも選択できます</span><span>FINISH</span></div><div class="course-lanes" id="placement-map" role="img" aria-label="車と障害物の配置図"></div></div>
+  <div class="placement-progress" id="placement-progress">レースが始まると車の現在位置を表示します。</div>
+  <div id="placement-feedback" class="placement-feedback" role="status" aria-live="polite"></div>
+</section>
 <section class="log"><h2>実行ログ</h2><div id="logs" class="log-list"></div></section>
 <p class="note">APIキーはこのPCのサーバー側で読み込みます。実行するとOpenAI APIを利用します。観戦画面のブラウザー画像は操作ごとに届くスクリーンショットです。</p>
 </main><script>
@@ -17,8 +29,19 @@ let version = 0;
 let pendingViewer = null;
 let pendingRunId = null;
 let requestError = '';
+let latestState = null;
+let placementReceivedAt = 0;
+let placementBusy = false;
+let placementRaceId = null;
+let manualPosition = false;
+let currentJunctionId = null;
+let obstacleOptions = [];
+let placementRules = { ahead: 12, spacing: 4, limit: 20, cooldownMs: 1500, finishMargin: 3 };
 
 function draw(state) {
+  latestState = state;
+  placementReceivedAt = Date.now();
+  drawPlacement();
   $('message').textContent = state.message;
   const narration = state.narration || {};
   const narrationLabels = {standby:'接続待ち',connecting:'接続中',live:'音声・字幕を配信中',ended:'配信終了',error:'接続エラー（レースは続行）',disabled:'無効'};
@@ -74,8 +97,8 @@ function closePendingViewer() {
   try { pendingViewer?.close(); } catch { /* The user may have closed the tab. */ }
   pendingViewer = null; pendingRunId = null;
 }
-async function api(path, method = 'GET') {
-  const response = await fetch(path, { method, cache: 'no-store', ...(method === 'POST' ? { headers: { 'Content-Type': 'application/json' }, body: '{}' } : {}) });
+async function api(path, method = 'GET', body = {}) {
+  const response = await fetch(path, { method, cache: 'no-store', ...(method === 'POST' ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}) });
   const data = await response.json();
   if (!response.ok) throw Error(data.error || 'リクエストに失敗しました。');
   return data;
@@ -110,5 +133,128 @@ async function action(path) {
 $('start').onclick = () => action('/api/start');
 $('stop').onclick = () => action('/api/stop');
 $('reset').onclick = () => action('/api/reset');
+
+function selectedJunction() {
+  const progress = Number($('prop-progress').value);
+  return latestState?.placement?.course.junctions.find(junction => progress >= junction.start && progress < junction.end);
+}
+function drawPlacementAvailability() {
+  const placement = latestState?.placement;
+  const estimatedNow = (placement?.updatedAt || placementReceivedAt) + Date.now() - placementReceivedAt;
+  const cooldown = placement?.lastPlacedAt ? Math.max(0, placement.lastPlacedAt + placementRules.cooldownMs - estimatedNow) : 0;
+  const enabled = Boolean(latestState?.canPlaceObstacle && obstacleOptions.length && !busy && !placementBusy);
+  const finishedSpace = placement && placement.minProgress > placement.maxProgress;
+  const full = placement?.count >= placementRules.limit;
+  $('prop-place').disabled = !enabled || cooldown > 0 || full || finishedSpace;
+  $('prop-place').textContent = placementBusy ? '設置しています…' : full ? '設置上限に達しました' : finishedSpace ? '前方の設置範囲なし' : !latestState?.canPlaceObstacle ? '走行中に設置できます' : cooldown > 0 ? '次の設置まで ' + (cooldown / 1000).toFixed(1) + '秒' : '設置する';
+  $('prop-ahead').disabled = !enabled || finishedSpace;
+}
+function drawPlacement() {
+  const placement = latestState?.placement;
+  if (placementRaceId !== latestState?.raceId) {
+    placementRaceId = latestState?.raceId;
+    manualPosition = false;
+    $('placement-feedback').textContent = '';
+  }
+  const asset = obstacleOptions.find(option => option.id === $('prop-type').value);
+  if (asset) {
+    $('prop-image').src = asset.sprite;
+    $('prop-image').alt = asset.label;
+    $('prop-image').hidden = false;
+    $('prop-effect').textContent = asset.effect;
+  }
+  $('placement-count').textContent = (placement?.count || 0) + ' / ' + placementRules.limit;
+  if (placement) {
+    if (!manualPosition) $('prop-progress').value = Math.min(placement.maxProgress, Math.ceil((placement.minProgress + 8) * 10) / 10);
+    $('prop-progress').max = placement.course.length;
+    $('placement-progress').textContent = 'SCARLET ' + placement.players.red.progress.toFixed(1) + ' / COBALT ' + placement.players.blue.progress.toFixed(1) + ' · 設置できる目安 ' + Math.ceil(placement.minProgress * 10) / 10 + '〜' + placement.maxProgress + '（移動に合わせてサーバーで再確認）';
+  } else {
+    $('prop-progress').value = '';
+    $('placement-progress').textContent = 'レースが始まると車の現在位置を表示します。';
+  }
+  const junction = selectedJunction();
+  if ((junction?.id || null) !== currentJunctionId) {
+    currentJunctionId = junction?.id || null;
+    $('prop-route').replaceChildren();
+    for (const [value, label] of junction ? [['left', '左分岐 · ' + junction.routes.left.name], ['right', '右分岐 · ' + junction.routes.right.name]] : [['', 'メインコース']]) {
+      const option = document.createElement('option'); option.value = value; option.textContent = label; $('prop-route').append(option);
+    }
+  }
+  $('prop-route').disabled = !junction;
+  $('placement-road').textContent = junction ? junction.name + ' · ' + ($('prop-route').value === 'left' ? '左' : '右') + '分岐の障害物' : 'メインコース · クリックで位置とレーンを選択';
+  drawCourseBoard();
+  drawPlacementAvailability();
+}
+function drawCourseBoard() {
+  const placement = latestState?.placement;
+  const board = $('placement-map');
+  board.replaceChildren();
+  const length = placement?.course.length || 200;
+  const junction = selectedJunction();
+  for (const fork of placement?.course.junctions || []) {
+    const zone = document.createElement('div'); zone.className = 'course-zone';
+    zone.style.left = fork.start / length * 100 + '%'; zone.style.width = (fork.end - fork.start) / length * 100 + '%';
+    board.append(zone);
+  }
+  for (let lane = 0; lane < 3; lane++) {
+    const row = document.createElement('div'); row.className = 'course-lane'; row.style.top = lane * 28 + 'px';
+    const name = document.createElement('span'); name.className = 'course-lane-name'; name.textContent = ['左', '中', '右'][lane]; row.append(name);
+    const marker = (progress, className, title, image) => {
+      const item = document.createElement(image ? 'img' : 'span'); item.className = 'course-marker ' + className;
+      item.style.left = Math.max(0, Math.min(100, progress / length * 100)) + '%'; item.title = title;
+      if (image) { item.src = image; item.alt = title; }
+      row.append(item);
+    };
+    for (const obstacle of placement?.course.obstacles || []) {
+      if (obstacle.lane !== lane || (junction && obstacle.junctionId === junction.id && obstacle.route !== $('prop-route').value)) continue;
+      const asset = obstacleOptions.find(option => option.id === obstacle.assetId);
+      marker(obstacle.progress, asset ? 'prop' : '', (asset?.label || '障害物') + ' · ' + obstacle.progress, asset?.top);
+    }
+    for (const color of ['red', 'blue']) {
+      const car = placement?.players[color];
+      if (car && Math.round(car.lane) === lane) marker(car.progress, 'car ' + color, color === 'red' ? 'SCARLET' : 'COBALT');
+    }
+    if (placement && Number($('prop-lane').value) === lane && $('prop-progress').value !== '') marker(Number($('prop-progress').value), 'proposed', '設置予定');
+    board.append(row);
+  }
+}
+async function loadObstacles() {
+  try {
+    const catalog = await api('/api/obstacle-options');
+    obstacleOptions = catalog.options;
+    placementRules = catalog.rules;
+    for (const item of obstacleOptions) { const option = document.createElement('option'); option.value = item.id; option.textContent = item.label; $('prop-type').append(option); }
+    $('prop-type').value = obstacleOptions.some(option => option.id === 'banana_peel') ? 'banana_peel' : obstacleOptions[0]?.id;
+    $('prop-type').disabled = obstacleOptions.length === 0;
+    drawPlacement();
+  } catch (error) { $('placement-feedback').textContent = '素材一覧を読み込めません。' + error.message; $('placement-feedback').classList.add('error'); }
+}
+$('prop-type').onchange = drawPlacement;
+$('prop-lane').onchange = drawPlacement;
+$('prop-route').onchange = drawPlacement;
+$('prop-progress').oninput = () => { manualPosition = true; drawPlacement(); };
+$('prop-ahead').onclick = () => { manualPosition = false; drawPlacement(); };
+$('placement-map').onclick = event => {
+  if (!latestState?.placement || placementBusy) return;
+  const bounds = $('placement-map').getBoundingClientRect();
+  manualPosition = true;
+  $('prop-progress').value = (Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)) * latestState.placement.course.length).toFixed(1);
+  $('prop-lane').value = Math.max(0, Math.min(2, Math.floor((event.clientY - bounds.top) / 28)));
+  drawPlacement();
+};
+$('prop-place').onclick = async () => {
+  if ($('prop-place').disabled) return;
+  const body = { assetId: $('prop-type').value, lane: Number($('prop-lane').value), progress: Number($('prop-progress').value) };
+  if (selectedJunction()) body.route = $('prop-route').value;
+  placementBusy = true; version++; drawPlacementAvailability();
+  $('placement-feedback').classList.remove('error'); $('placement-feedback').textContent = 'サーバーで設置場所を確認しています…';
+  try {
+    const state = await api('/api/obstacles', 'POST', body);
+    manualPosition = false; draw(state);
+    $('placement-feedback').textContent = '設置しました · ' + obstacleOptions.find(option => option.id === body.assetId).label + ' · 距離 ' + body.progress;
+  } catch (error) { $('placement-feedback').classList.add('error'); $('placement-feedback').textContent = '設置できませんでした: ' + error.message; }
+  finally { placementBusy = false; drawPlacementAvailability(); await refresh(); }
+};
+loadObstacles(); setInterval(drawPlacementAvailability, 100);
 refresh(); setInterval(refresh, 1000);
 </script></body></html>

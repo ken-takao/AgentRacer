@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request as httpRequest } from 'node:http';
 import { createOperatorServer, parseEnv, readEventStream, drivingInputs } from './server.mjs';
+import { loadObstacleCatalog, parsePlacement, placementView } from './obstacles.mjs';
 
 test('env parser preserves quoted values and ignores comments', () => {
   assert.deepEqual(parseEnv('A=one # comment\nB="two three"\nexport C=42\n# D=no'), { A: 'one', B: 'two three', C: '42' });
@@ -23,6 +24,53 @@ test('route choices count as driving evidence, contacts do not', () => {
     { type: 'route_change', playerId: 'red' }, { type: 'car_collision' },
     { type: 'route_entered', playerId: 'blue' },
   ] }), { red: 1, blue: 0 });
+});
+
+test('accepted jumps count as driving evidence but landings and rejected jumps do not', () => {
+  assert.deepEqual(drivingInputs({ history: [
+    { type: 'jump_started', playerId: 'red' }, { type: 'jump_landed', playerId: 'red' },
+    { type: 'obstacle_placed' }, { type: 'jump_rejected', playerId: 'blue' },
+  ] }), { red: 1, blue: 0 });
+});
+
+test('placement body excludes arbitrary targets, credentials and invalid catalog entries', () => {
+  const options = [{ id: 'banana_peel' }];
+  const valid = { assetId: 'banana_peel', lane: 1, progress: 130, route: 'left' };
+  assert.deepEqual(parsePlacement(valid, options), valid);
+  for (const invalid of [null, [], { ...valid, raceId: 'another-race' }, { ...valid, url: 'https://other.invalid' },
+    { ...valid, admin: 'secret' }, { ...valid, assetId: 'boost_pad' }, { ...valid, lane: '1' },
+    { ...valid, progress: NaN }, { ...valid, progress: '130' }, { ...valid, lane: 3 }, { ...valid, route: 'main' }]) {
+    assert.throws(() => parsePlacement(invalid, options), error => error.status === 400);
+  }
+});
+
+test('catalog only serves manifest obstacle PNGs, rejecting path traversal even in a manifest', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'obstacle-manifest-'));
+  try {
+    const item = { id: 'banana_peel', kind: 'obstacle', label: 'バナナ', glb: 'banana_peel.glb', sprite: 'banana_peel_iso.png', top: 'banana_peel_top.png' };
+    await writeFile(join(root, 'manifest.json'), JSON.stringify([item, { ...item, id: 'sign', kind: 'sign' }]));
+    const catalog = await loadObstacleCatalog(root);
+    assert.deepEqual(catalog.options.map(option => option.id), ['banana_peel']);
+    assert.equal(catalog.assets.size, 2);
+    assert.equal(catalog.assets.get('/assets/props/banana_peel_iso.png'), join(root, 'banana_peel_iso.png'));
+    assert.doesNotMatch(JSON.stringify(catalog.options), /\.glb/);
+    await writeFile(join(root, 'manifest.json'), JSON.stringify([{ ...item, sprite: '../secret.png' }]));
+    await assert.rejects(loadObstacleCatalog(root), /素材パス/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('placement read model explicitly omits capabilities and private engine state', () => {
+  const view = placementView({ raceId: 'race_safe', config: { admin: 'fixture-admin' }, finalState: {
+    phase: 'racing', updatedAt: 5000, placedObstacleCount: 2, lastObstaclePlacedAt: 4200,
+    token: 'capability', carContact: { private: true },
+    players: { red: { progress: 90, lane: 1, nextObstacleIndex: 7, token: 'red-secret' }, blue: { progress: 80, lane: 2 } },
+    course: { length: 200, obstacles: [{ id: 'manual-1', assetId: 'banana_peel', progress: 130, blockedLane: 1, route: 'left' }] },
+  } });
+  assert.equal(view.minProgress, 102);
+  assert.equal(view.maxProgress, 197);
+  assert.equal(view.count, 2);
+  assert.equal(view.course.obstacles[0].lane, 1);
+  assert.doesNotMatch(JSON.stringify(view), /fixture-admin|capability|red-secret|nextObstacleIndex|carContact/);
 });
 
 test('SSE decoder accepts fragmented CRLF and multiline data', async () => {
@@ -46,8 +94,16 @@ test('mocked two-browser run enforces local origin, uploads frames, and deletes 
   let finishOnStop = false;
   let rejectDeletes = false;
   let roomCount = 0;
+  const placements = [];
+  let rejectPlacement = true;
+  let placedObstacles = [];
+  let lastPlacedAt = 0;
+  let placementGate = null;
+  let releasePlacement = () => {};
   const observedState = finished => ({ phase: finished ? 'finished' : 'racing', winner: finished ? 'red' : null,
-    players: { red: { progress: finished ? 200 : 100, collisionCount: 1 }, blue: { progress: finished ? 185 : 90, collisionCount: 2 } },
+    updatedAt: Date.now(), placedObstacleCount: placedObstacles.length, lastObstaclePlacedAt: lastPlacedAt,
+    players: { red: { progress: finished ? 200 : 100, lane: 0, collisionCount: 1 }, blue: { progress: finished ? 185 : 90, lane: 2, collisionCount: 2 } },
+    course: { length: 200, junctions: [{ id: 'fork-2', name: 'CROSSOVER', start: 122, end: 160, routes: { left: { name: 'TECHNICAL' }, right: { name: 'WIDE' } } }], obstacles: [...placedObstacles] },
     history: [{ type: 'ready', playerId: 'red' }, { type: 'lane_change', playerId: 'red' }, { type: 'speed_change', playerId: 'blue' }],
   });
   const encoder = new TextEncoder();
@@ -58,12 +114,22 @@ test('mocked two-browser run enforces local origin, uploads frames, and deletes 
     if (target.hostname === 'game.invalid') {
       assert.equal(init.headers.Authorization, 'Bearer fixture-admin');
       if (target.pathname === '/api/races') {
+        placedObstacles = []; lastPlacedAt = 0;
         const id = `race_fixture_${++roomCount}`;
         return json({ id, playerUrls: { red: `https://game.invalid/play/${id}/red#red-secret`, blue: `https://game.invalid/play/${id}/blue#blue-secret` }, spectatorUrl: `https://game.invalid/race/${id}` }, 201);
       }
       if (target.pathname.includes('/frame/')) { uploads.add(target.pathname.split('/').at(-1)); return json({ ok: true }); }
       if (target.pathname.endsWith('/telemetry')) return json({ ok: true });
       if (target.pathname.endsWith('/stop')) return json({ state: observedState(true), telemetry: {} });
+      if (target.pathname.endsWith('/obstacles')) {
+        placements.push({ path: target.pathname, body: JSON.parse(init.body) });
+        if (rejectPlacement) return json({ error: '車の12以上前方に設置してください。' }, 409);
+        await placementGate;
+        const body = JSON.parse(init.body);
+        placedObstacles.push({ id: 'manual-1', assetId: body.assetId, blockedLane: body.lane, progress: body.progress, route: body.route, junctionId: 'fork-2' });
+        lastPlacedAt = Date.now();
+        return json({ state: observedState(false), telemetry: {} }, 201);
+      }
       return json({ state: observedState(uploads.size === 2 && decisionResults.size === sessions.size && !finishOnStop), telemetry: {} });
     }
     assert.equal(target.origin, 'https://api.openai.com');
@@ -139,7 +205,7 @@ test('mocked two-browser run enforces local origin, uploads frames, and deletes 
   await new Promise(resolve => operator.server.listen(port, '127.0.0.1', resolve));
   try {
     const base = `http://127.0.0.1:${port}`;
-    const post = path => savedFetch(base + path, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: '{}' });
+    const post = (path, body = {}) => savedFetch(base + path, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const waitFor = async predicate => {
       for (let i = 0; i < 100; i++) {
         const state = await (await savedFetch(base + '/api/status')).json();
@@ -153,6 +219,18 @@ test('mocked two-browser run enforces local origin, uploads frames, and deletes 
       request.on('error', reject); request.end();
     });
     assert.equal(reboundStatus, 403);
+    const catalog = await (await savedFetch(base + '/api/obstacle-options')).json();
+    assert.equal(catalog.options.length, 9);
+    assert.ok(catalog.options.some(option => option.id === 'banana_peel'));
+    assert.ok(catalog.options.every(option => !['boost_pad', 'chevron_sign', 'speed_limit_80', 'speed_radar'].includes(option.id)));
+    const sprite = await savedFetch(base + catalog.options[0].sprite);
+    assert.equal(sprite.status, 200);
+    assert.equal(sprite.headers.get('content-type'), 'image/png');
+    assert.equal(Buffer.from(await sprite.arrayBuffer()).subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+    assert.equal((await savedFetch(base + '/assets/props/chevron_sign_iso.png')).status, 404);
+    assert.equal((await savedFetch(base + '/assets/props/..%2f..%2f.dev.vars')).status, 404);
+    assert.equal((await post('/api/obstacles', { assetId: 'banana_peel', lane: 1, progress: 130 })).status, 409);
+    assert.equal(placements.length, 0);
     assert.equal((await savedFetch(base + '/api/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 403);
     assert.equal((await savedFetch(base + '/api/start', { method: 'POST', headers: { Origin: base, 'Content-Type': 'text/plain' }, body: '{}' })).status, 415);
     const started = await savedFetch(base + '/api/start', { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: '{}' });
@@ -214,7 +292,44 @@ test('mocked two-browser run enforces local origin, uploads frames, and deletes 
     assert.equal((await post('/api/start')).status, 409);
     assert.equal(operator.status().canStart, false);
     assert.equal(operator.status().canReset, false);
+    await waitFor(value => value.canPlaceObstacle);
+    const place = { assetId: 'banana_peel', lane: 1, progress: 130, route: 'left' };
+    for (const headers of [
+      { 'Content-Type': 'application/json' },
+      { Origin: 'https://game.invalid', 'Content-Type': 'application/json' },
+      { Origin: base, 'Content-Type': 'text/plain' },
+    ]) {
+      const response = await savedFetch(base + '/api/obstacles', { method: 'POST', headers, body: JSON.stringify(place) });
+      assert.ok([403, 415].includes(response.status));
+    }
+    assert.equal((await post('/api/obstacles', { ...place, raceId: 'another-race' })).status, 400);
+    assert.equal((await post('/api/obstacles', { ...place, assetId: 'boost_pad' })).status, 400);
+    assert.equal(placements.length, 0, 'rejected local requests must not reach the remote API');
+    const beforePlacement = structuredClone(operator.status().placement);
+    const rejectedPlacement = await post('/api/obstacles', place);
+    assert.equal(rejectedPlacement.status, 409);
+    assert.match((await rejectedPlacement.json()).error, /12以上前方/);
+    assert.deepEqual(operator.status().placement.course, beforePlacement.course);
+    assert.equal(operator.status().placement.count, 0);
+    rejectPlacement = false;
+    placementGate = new Promise(resolve => { releasePlacement = resolve; });
+    const placing = post('/api/obstacles', place);
+    await waitFor(value => !value.canPlaceObstacle);
+    assert.equal((await post('/api/obstacles', place)).status, 409, 'duplicate in-flight local placements are rejected');
+    releasePlacement();
+    const placed = await placing;
+    assert.equal(placed.status, 201);
+    const placementResponse = await placed.json();
+    assert.equal(placementResponse.placement.count, 1);
+    assert.equal(placementResponse.placement.course.obstacles[0].assetId, 'banana_peel');
+    assert.doesNotMatch(JSON.stringify(placementResponse), /fixture-admin|fixture-openai|red-secret|blue-secret/);
+    assert.deepEqual(placements, [
+      { path: '/api/races/race_fixture_2/obstacles', body: place },
+      { path: '/api/races/race_fixture_2/obstacles', body: place },
+    ]);
     await savedFetch(base + '/api/stop', { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal((await post('/api/obstacles', place)).status, 409);
+    assert.equal(placements.length, 2);
     for (let i = 0; i < 70; i++) {
       state = await (await savedFetch(base + '/api/status')).json();
       if (state.canStart) break;
@@ -255,6 +370,7 @@ test('mocked two-browser run enforces local origin, uploads frames, and deletes 
     assert.equal(roomCount, 3);
     assert.equal(sessions.size, 6);
   } finally {
+    releasePlacement();
     await operator.stop();
     globalThis.fetch = savedFetch;
     await rm(directory, { recursive: true, force: true });

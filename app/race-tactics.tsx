@@ -4,10 +4,12 @@ import { useMemo } from "react";
 import { circuitPosition } from "../lib/circuit-geometry";
 import { COURSE_NAMES, activeJunction, nextJunction, roadKey, selectedRoute } from "../lib/race-course";
 import type { CourseFeatures, RouteChoice } from "../lib/race-course";
+import { getObstacleAsset } from "../lib/obstacle-catalog";
+import { raceEffectsAt, type RaceEffectState } from "../lib/race-effects";
 import "./race-tactics.css";
 
 type Id = "red" | "blue";
-type Driver = { progress: number; lane: number; targetLane: number; speed: number; routeChoices?: Record<string, RouteChoice>; carCollisions?: number; lastCarCollisionAt?: number; upcomingObstacles: { id: string; progress: number; blockedLane: number }[] };
+type Driver = RaceEffectState & { progress: number; lane: number; targetLane: number; speed: number; routeChoices?: Record<string, RouteChoice>; carCollisions?: number; lastCarCollisionAt?: number; upcomingObstacles: { id: string; progress: number; blockedLane: number; assetId?: string }[] };
 export type TacticalRace = { phase: string; updatedAt: number; now?: number; course: CourseFeatures & { length: number }; players: Record<Id, Driver> };
 const names = { red: "SCARLET", blue: "COBALT" };
 const colors = { red: "#ff625b", blue: "#68a4ff" };
@@ -76,14 +78,28 @@ export function TacticalRoad({ race, player }: { race: TacticalRace; player: Id 
   const junction = activeJunction(race.course, mine.progress);
   // Enlarge the near field so the two cars remain distinguishable at bumper distance.
   const depth = (distance: number) => Math.sign(distance) * (Math.abs(distance) <= 6 ? Math.abs(distance) * 22 : 132 + (Math.abs(distance) - 6) * 2.1);
-  const car = (id: Id, lane: number, y: number, own: boolean) => <g transform={`translate(${100 + lane * 110} ${y})`}><rect x="-18" y="-29" width="36" height="58" rx="8" fill={colors[id]} stroke="#eff6ff" strokeWidth={own ? 2 : 3} /><rect x="-12" y="-7" width="24" height="18" rx="3" fill="#11242f" /><path d="M-21 -19V-8M21 -19V-8M-21 14V24M21 14V24" stroke="#08131d" strokeWidth="6" /><text x="0" y={own ? 49 : -39} fill={colors[id]} fontSize="13" fontWeight="bold" textAnchor="middle">{own ? `YOU / ${names[id]}` : names[id]}</text></g>;
+  const now = race.now ?? race.updatedAt;
+  const car = (id: Id, lane: number, y: number, own: boolean) => {
+    const effect = raceEffectsAt(race.players[id], now, race.phase);
+    return <g transform={`translate(${100 + lane * 110} ${y})`} data-effect={effect.spinning ? "spin" : effect.airborne ? "jump" : "ground"}>
+      {effect.airborne && <><ellipse rx="22" ry="31" fill="#07131e" opacity=".5" /><path d="M-14 18l-8 18M0 21v25M14 18l8 18" stroke="#a7f4ff" strokeWidth="4" /></>}
+      <g transform={`translate(0 ${-effect.height * 7}) rotate(${effect.spinRadians * 180 / Math.PI}) scale(${1 + effect.height * .035})`}>
+        <rect x="-18" y="-29" width="36" height="58" rx="8" fill={colors[id]} stroke="#eff6ff" strokeWidth={own ? 2 : 3} /><rect x="-12" y="-7" width="24" height="18" rx="3" fill="#11242f" /><path d="M-21 -19V-8M21 -19V-8M-21 14V24M21 14V24" stroke="#08131d" strokeWidth="6" />
+      </g>
+      <text x="0" y={own ? 49 : -39 - effect.height * 7} fill={colors[id]} fontSize="13" fontWeight="bold" textAnchor="middle">{own ? `YOU / ${names[id]}` : names[id]}</text>
+      {(effect.airborne || effect.spinning) && <text x="0" y={own ? 68 : -58 - effect.height * 7} fill={effect.spinning ? "#ffe274" : "#a7f4ff"} fontSize="13" fontWeight="bold" textAnchor="middle">{effect.spinning ? `SPIN ${(effect.spinRemainingMs / 1000).toFixed(1)}s · 停止中` : `AIR ${(effect.jumpRemainingMs / 1000).toFixed(1)}s`}</text>}
+    </g>;
+  };
   return <svg className="road-preview tactical-road" viewBox="0 0 420 440" role="img" aria-label={`前方60ユニットと後方4ユニット。自車と${sameRoad ? "相手車両" : "別ルートの相手は非表示"}、障害物を表示`}>
     <defs><pattern id={`lane-dashes-${player}`} x="0" y={(mine.progress * 4.2) % 40} width="110" height="40" patternUnits="userSpaceOnUse"><path d="M45 0V20" stroke="#8d9da4" strokeWidth="2" /></pattern></defs>
     <rect width="420" height="440" rx="12" fill="#11212b" /><path d="M45 45H375V424H45Z" fill="#2c3d48" />
     <rect x="150" y="45" width="120" height="375" fill={`url(#lane-dashes-${player})`} />
     <path d="M45 45V424M375 45V424" stroke="#d8ed94" strokeWidth="4" strokeDasharray="12 10" />
     <text x="210" y="25" textAnchor="middle" fill="#d8ed94" fontSize="12" fontWeight="bold">{junction ? `${junction.name} / ${selectedRoute(junction, mine).toUpperCase()}` : "MAIN ROAD · LEFT / CENTER / RIGHT"}</text>
-    {mine.upcomingObstacles.map(o => { const distance = o.progress - mine.progress; if (distance < -2 || distance > 60) return null; return <g key={o.id} transform={`translate(${100 + o.blockedLane * 110} ${318 - depth(distance)})`}><rect x="-40" y="-11" width="80" height="22" rx="3" fill="#f2bd54" /><path d="M-30 -10L-10 10M-5 -10L15 10M20 -10L40 10" stroke="#695024" strokeWidth="7" /><text x="0" y="-19" textAnchor="middle" fill="#ffe0a1" fontSize="12">{distance.toFixed(0)} u</text></g>; })}
+    {mine.upcomingObstacles.map(o => { const distance = o.progress - mine.progress; if (distance < -2 || distance > 60) return null; const asset = getObstacleAsset(o.assetId); return <g key={o.id} transform={`translate(${100 + o.blockedLane * 110} ${318 - depth(distance)})`}>
+      {asset ? <image href={asset.topUrl} x="-31" y="-31" width="62" height="62"><title>{asset.label}</title></image> : <><rect x="-40" y="-11" width="80" height="22" rx="3" fill="#f2bd54" /><path d="M-30 -10L-10 10M-5 -10L15 10M20 -10L40 10" stroke="#695024" strokeWidth="7" /></>}
+      <text x="0" y={asset ? -35 : -19} textAnchor="middle" fill="#ffe0a1" fontSize="12">{asset ? `${asset.label} · ` : ""}{distance.toFixed(0)} u</text>
+    </g>; })}
     {sameRoad && gap >= -4 && gap <= 60 && car(other, rival.lane, 318 - depth(gap), false)}
     {car(player, mine.lane, 318, true)}
     <text x="210" y="431" textAnchor="middle" fill="#b8c9d2" fontSize="11">FRONT 60 u / REAR 4 u · 車両同士も衝突します</text>

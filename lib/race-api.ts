@@ -14,6 +14,11 @@ export class RaceApiError extends Error {
 }
 
 const knownErrors: Record<string, string> = {
+  "ジャンプはレース中にのみ使用できます": "ジャンプはレース中にのみ使用できます。",
+  "空中では再ジャンプできません": "空中では再ジャンプできません。",
+  "スピンが終わるまでジャンプできません": "スピンが終わるまでジャンプできません。",
+  "着地から2秒後に再びジャンプできます": "着地から2秒後に再びジャンプできます。",
+
   "Unknown route": "進路はLEFTかRIGHTを選んでください。",
   "Unknown junction": "この分岐は見つかりません。画面を更新してください。",
   "The route is locked after entering the junction": "分岐に入りました。次の分岐で進路を選んでください。",

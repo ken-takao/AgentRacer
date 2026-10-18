@@ -6,6 +6,8 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { circuitAtProgress, circuitBounds, circuitPosition } from "../lib/circuit-geometry";
 import { COURSE_NAMES, type CourseFeatures, type RouteChoice } from "../lib/race-course";
 import { cameraPose, selectAutoShot, smoothCameraHeading, type CameraShot } from "../lib/race-camera";
+import { getObstacleAsset } from "../lib/obstacle-catalog";
+import { raceEffectsAt, type RaceEffectState } from "../lib/race-effects";
 import "./race-circuit-3d.css";
 
 type DriverId = "red" | "blue";
@@ -14,8 +16,8 @@ type CircuitRace = {
   phase: string;
   updatedAt: number;
   now?: number;
-  course: CourseFeatures & { length: number; obstacles: { id: string; progress: number; blockedLane: number; junctionId?: string; route?: RouteChoice }[] };
-  players: Record<DriverId, { progress: number; lane: number; speed: number; slowedUntil: number; routeChoices?: Record<string, RouteChoice> }>;
+  course: CourseFeatures & { length: number; obstacles: { id: string; progress: number; blockedLane: number; junctionId?: string; route?: RouteChoice; assetId?: string }[] };
+  players: Record<DriverId, RaceEffectState & { progress: number; lane: number; speed: number; slowedUntil: number; routeChoices?: Record<string, RouteChoice> }>;
 };
 export type RaceCircuit3DProps = { race: CircuitRace; decorative?: boolean; onUnavailable?: () => void; sampleRace?: (timestamp: number) => CircuitRace | undefined };
 const DRIVERS: DriverId[] = ["red", "blue"];
@@ -27,13 +29,17 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
   const stageRef = useRef<HTMLDivElement>(null);
   const shotLabelRef = useRef<HTMLSpanElement>(null);
   const labelsRef = useRef<Record<DriverId, HTMLDivElement | null>>({ red: null, blue: null });
+  const effectLabelsRef = useRef<Record<DriverId, HTMLSpanElement | null>>({ red: null, blue: null });
   const latest = useRef(race); latest.current = race;
   const sampleRef = useRef(sampleRace); sampleRef.current = sampleRace;
   const unavailableRef = useRef(onUnavailable); unavailableRef.current = onUnavailable;
   const viewRef = useRef<View>(decorative ? "overview" : "auto");
   const [view, setView] = useState<View>(decorative ? "overview" : "auto");
   const [status, setStatus] = useState<"loading" | "ready" | "unavailable">("loading");
-  const courseKey = JSON.stringify(race.course);
+  // Runtime placements update only their scene nodes, preserving camera state,
+  // loaded Roadsters and GPU resources for the unchanged circuit geometry.
+  const { obstacles: _obstacles, ...geometry } = race.course;
+  const courseKey = JSON.stringify(geometry);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -204,22 +210,9 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
     Object.assign(sun.shadow.camera, { left: -145, right: 145, top: 110, bottom: -110, near: 1, far: 250 }); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.05; scene.add(sun);
     const fill = new THREE.DirectionalLight(0x87baff, 1.1); fill.position.set(25, 35, -45); scene.add(fill);
 
-    const cars: Partial<Record<DriverId, THREE.Group>> = {}, auras: Partial<Record<DriverId, THREE.Mesh>> = {};
+    const cars: Partial<Record<DriverId, THREE.Group>> = {}, auras: Partial<Record<DriverId, THREE.Mesh>> = {}, jets: Partial<Record<DriverId, THREE.Group>> = {};
     const gates = new THREE.Group(); group.add(gates);
     const barrierGeometry = new THREE.BoxGeometry(0.7, 1.1, 3.5); assets.add(new THREE.Mesh(barrierGeometry, orange));
-    let barrierModel: THREE.Group | undefined;
-    const refreshGates = () => {
-      gates.clear();
-      for (const obstacle of course.obstacles) {
-        const routes = obstacle.junctionId && obstacle.route ? { [obstacle.junctionId]: obstacle.route } : {};
-        const p = circuitPosition(obstacle.progress, obstacle.blockedLane, course.length, course, routes);
-        const gate = new THREE.Group(); gate.position.set(p.x, p.y + 0.05, p.z); gate.rotation.set(0, -p.heading, p.slope, "YXZ");
-        if (barrierModel) { const model = barrierModel.clone(true); model.rotation.y = Math.PI / 2; model.scale.setScalar(1.55); gate.add(model); }
-        else { const mesh = new THREE.Mesh(barrierGeometry, orange); mesh.position.y = 0.55; mesh.castShadow = true; gate.add(mesh); }
-        gates.add(gate);
-      }
-    };
-    refreshGates();
     const loader = new GLTFLoader();
     const loadModel = async (url: string) => {
       const response = await fetch(url, { signal: abort.signal }); if (!response.ok) throw new Error(`Model unavailable: ${response.status}`);
@@ -228,12 +221,60 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
       if (disposed) { disposeRoots([gltf.scene]); throw new Error("Scene disposed"); }
       roots.add(gltf.scene); gltf.scene.traverse(object => { if (object instanceof THREE.Mesh) { object.castShadow = true; object.receiveShadow = true; } }); return gltf.scene;
     };
+    const propModels = new Map<string, THREE.Group>();
+    const loadingProps = new Set<string>();
+    const obstacleNodes = new Map<string, { signature: string; node: THREE.Group; assetId: string; loaded: boolean }>();
+    let obstacleSignature = "";
+    let obstacleInput: CircuitRace["course"]["obstacles"] | undefined;
+    const reconcileObstacles = (obstacles: CircuitRace["course"]["obstacles"]) => {
+      if (obstacleInput === obstacles && obstacleSignature) return;
+      obstacleInput = obstacles;
+      const signature = JSON.stringify(obstacles);
+      if (signature === obstacleSignature) return;
+      obstacleSignature = signature;
+      const wanted = new Set(obstacles.map(o => o.id));
+      for (const [id, entry] of obstacleNodes) if (!wanted.has(id)) { gates.remove(entry.node); obstacleNodes.delete(id); }
+      for (const obstacle of obstacles) {
+        const asset = getObstacleAsset(obstacle.assetId) ?? getObstacleAsset("water_barrier")!;
+        const model = propModels.get(asset.id), spec = JSON.stringify(obstacle);
+        const existing = obstacleNodes.get(obstacle.id);
+        if (existing?.signature === spec && existing.loaded === Boolean(model)) continue;
+        if (existing) gates.remove(existing.node);
+        const routes = obstacle.junctionId && obstacle.route ? { [obstacle.junctionId]: obstacle.route } : {};
+        const p = circuitPosition(obstacle.progress, obstacle.blockedLane, course.length, course, routes);
+        const gate = new THREE.Group(); gate.position.set(p.x, p.y + 0.05, p.z); gate.rotation.set(0, -p.heading, p.slope, "YXZ");
+        if (model) {
+          const prop = model.clone(true);
+          // Authoring coordinates are shared across the manifest's props.
+          prop.rotation.y = Math.PI / 2; prop.scale.setScalar(1.55); gate.add(prop);
+        } else { const mesh = new THREE.Mesh(barrierGeometry, orange); mesh.position.y = 0.55; mesh.castShadow = true; gate.add(mesh); }
+        gates.add(gate); obstacleNodes.set(obstacle.id, { signature: spec, node: gate, assetId: asset.id, loaded: Boolean(model) });
+        if (!model && !loadingProps.has(asset.id)) {
+          loadingProps.add(asset.id);
+          void loadModel(asset.glbUrl).then(loaded => {
+            if (disposed) return;
+            propModels.set(asset.id, loaded);
+            // Invalidate only prop reconciliation, never the static scene.
+            obstacleSignature = "";
+          }).catch(() => { /* Keep the visible collision marker if a prop cannot load. */ });
+        }
+      }
+      if (stageRef.current) stageRef.current.dataset.obstacleCount = String(obstacleNodes.size);
+    };
+    reconcileObstacles(course.obstacles);
+    const jetGeometry = new THREE.ConeGeometry(0.3, 1.3, 8, 1, true);
+    const jetMaterial = new THREE.MeshBasicMaterial({ color: 0xb5f5ff, transparent: true, opacity: 0.7, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
+    assets.add(new THREE.Mesh(jetGeometry, jetMaterial));
     void Promise.all(DRIVERS.map(async id => {
       const model = await loadModel(`/models/tesla-roadster/roadster_${id === "red" ? "02_red" : "03_blue"}.glb`); if (disposed) return;
       const car = new THREE.Group(); car.add(model); group.add(car); cars[id] = car;
+      const exhaust = new THREE.Group();
+      for (const [x, z] of [[-.75, -1.15], [.75, -1.15], [-.75, 1.15], [.75, 1.15]]) {
+        const jet = new THREE.Mesh(jetGeometry, jetMaterial); jet.position.set(x, -.55, z); exhaust.add(jet);
+      }
+      exhaust.visible = false; car.add(exhaust); jets[id] = exhaust;
       const glow = new THREE.Mesh(new THREE.RingGeometry(1.8, 1.94, 40), new THREE.MeshBasicMaterial({ color: COLORS[id], transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false })); glow.rotation.x = -Math.PI / 2; group.add(glow); auras[id] = glow;
     })).then(() => { if (!disposed) setStatus("ready"); }).catch(() => { if (!disposed) fail(); });
-    void loadModel("/roadster-circuit/props/water_barrier.glb").then(model => { if (!disposed) { barrierModel = model; refreshGates(); } }).catch(() => {});
 
     const motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)"); let reducedMotion = motionPreference.matches;
     const onMotionPreference = () => { reducedMotion = motionPreference.matches; activeKey = ""; }; motionPreference.addEventListener("change", onMotionPreference);
@@ -253,12 +294,26 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
       // Consume buffered authoritative positions at display cadence. React only
       // handles controls and network snapshots, never the animation clock.
       const current = sampleRef.current?.(timestamp) ?? latest.current;
-      const positions = DRIVERS.map(id => ({ ...circuitPosition(current.players[id].progress, current.players[id].lane, course.length, course, current.players[id].routeChoices), speed: current.players[id].speed }));
+      reconcileObstacles(current.course.obstacles);
+      const now = current.now ?? current.updatedAt;
+      const effects = DRIVERS.map(id => raceEffectsAt(current.players[id], now, current.phase));
+      const positions = DRIVERS.map((id, index) => {
+        const ground = circuitPosition(current.players[id].progress, current.players[id].lane, course.length, course, current.players[id].routeChoices);
+        return { ...ground, y: ground.y + effects[index].height, speed: effects[index].spinning ? 0 : current.players[id].speed };
+      });
       DRIVERS.forEach((id, index) => {
-        const p = positions[index], car = cars[id], player = current.players[id];
-        if (car) { car.position.set(p.x, p.y + 0.08, p.z); car.rotation.set(0, Math.PI - p.heading, -p.slope, "YXZ"); }
+        const p = positions[index], car = cars[id], player = current.players[id], effect = effects[index];
+        if (car) { car.position.set(p.x, p.y + 0.08 - effect.landing * 0.08, p.z); car.rotation.set(0, Math.PI - p.heading + effect.spinRadians, -p.slope, "YXZ"); }
+        const exhaust = jets[id];
+        if (exhaust) { exhaust.visible = effect.airborne; exhaust.scale.y = 0.8 + Math.sin(now * 0.075) * 0.15; }
         const aura = auras[id];
-        if (aura) { aura.position.set(p.x, p.y + 0.09, p.z); (aura.material as THREE.MeshBasicMaterial).opacity = current.phase === "racing" && player.slowedUntil > (current.now ?? current.updatedAt) ? 0.95 : 0.45; }
+        if (aura) {
+          aura.position.set(p.x, p.y - effect.height + 0.09, p.z);
+          aura.scale.setScalar(effect.landing ? 1 + (1 - effect.landing) * 1.8 : effect.spinning ? 1.1 : 1);
+          (aura.material as THREE.MeshBasicMaterial).opacity = effect.landing ? effect.landing : effect.spinning || effect.airborne || current.phase === "racing" && player.slowedUntil > now ? 0.95 : 0.45;
+        }
+        const effectLabel = effectLabelsRef.current[id];
+        if (effectLabel) effectLabel.textContent = effect.spinning ? ` ↻ SPIN ${(effect.spinRemainingMs / 1000).toFixed(1)}s` : effect.airborne ? ` ↑ AIR ${(effect.jumpRemainingMs / 1000).toFixed(1)}s` : "";
       });
       const selectedView = viewRef.current;
       if (previousPhase !== current.phase || previousView !== selectedView) { directorSeconds = 0; activeKey = ""; previousPhase = current.phase; previousView = selectedView; }
@@ -329,7 +384,7 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
   return <div ref={stageRef} className={`race-circuit-3d${decorative ? " is-decorative" : ""}`} data-renderer="three-dimensional" data-scene-status={status} data-camera-mode={view}>
     <canvas ref={canvasRef} aria-label="赤と青のロードスターが分岐や立体交差を走る3Dレースコース" role="img" />
     <div className="circuit-3d-topline"><span><i />{race.course.layout ? COURSE_NAMES[race.course.layout] : "TOKYO CIRCUIT"} <b>3D</b></span><small>{race.course.junctions?.length ? "2 FORKS · CROSSOVER · 1 LAP" : "3 LANES · 1 LAP"}</small></div>
-    {DRIVERS.map(id => <div key={id} ref={element => { labelsRef.current[id] = element; }} className={`circuit-3d-car-label is-${id}`}><i />{id === "red" ? "SCARLET" : "COBALT"}</div>)}
+    {DRIVERS.map(id => <div key={id} ref={element => { labelsRef.current[id] = element; }} className={`circuit-3d-car-label is-${id}`}><i />{id === "red" ? "SCARLET" : "COBALT"}<span ref={element => { effectLabelsRef.current[id] = element; }} /></div>)}
     {status === "loading" && <div className="circuit-3d-loading" role="status"><i />3Dサーキットを準備しています</div>}
     {status === "unavailable" && <div className="circuit-3d-unavailable" role="status">3D表示を読み込めませんでした。ページを再読み込みしてください。</div>}
     {!decorative && <div className="circuit-3d-cameras" role="group" aria-label="観戦カメラ"><span>CAMERA</span><button type="button" className="auto-camera" aria-pressed={view === "auto"} onClick={() => chooseView("auto")}>自動</button><button type="button" aria-pressed={view === "overview"} onClick={() => chooseView("overview")}>コース全体</button><button type="button" className="red-camera" aria-pressed={view === "red"} onClick={() => chooseView("red")}>SCARLET</button><button type="button" className="blue-camera" aria-pressed={view === "blue"} onClick={() => chooseView("blue")}>COBALT</button></div>}

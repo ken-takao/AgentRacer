@@ -1,5 +1,5 @@
 /** Public decisions contain choices and timing only, never prompts, frames, or credentials. */
-export const DRIVE_ACTIONS = ["lane_left", "lane_center", "lane_right", "speed_slow", "speed_normal", "speed_turbo", "route_left", "route_right", "wait"] as const;
+export const DRIVE_ACTIONS = ["lane_left", "lane_center", "lane_right", "speed_slow", "speed_normal", "speed_turbo", "route_left", "route_right", "jump", "wait"] as const;
 export type DriveAction = typeof DRIVE_ACTIONS[number];
 export type DriveDecision = {
   model: "gpt-6-luna";

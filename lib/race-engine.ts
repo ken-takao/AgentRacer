@@ -1,5 +1,6 @@
 import { activeJunction, createCourseFeatures, roadKey, routeSpeedMultiplier, selectedRoute } from "./race-course.ts";
 import type { CourseFeatures, RouteChoice } from "./race-course.ts";
+import { getObstacleAsset } from "./obstacle-catalog.ts";
 
 /** Deterministic, wall-clock racing. Times are Unix milliseconds; distance is in track units. */
 export type PlayerId = "red" | "blue";
@@ -11,6 +12,7 @@ export type RaceInput =
   | { type: "ready" }
   | { type: "lane"; lane: Lane }
   | { type: "speed"; speed: SpeedMode }
+  | { type: "jump" }
   | { type: "route"; junctionId: string; route: RouteChoice };
 
 export const RACE_RULES = {
@@ -24,6 +26,14 @@ export const RACE_RULES = {
   collisionHalfWidth: 0.45,
   carLength: 2.4,
   carWidth: 0.7,
+  jumpMs: 800,
+  jumpCooldownMs: 2_000,
+  spinMs: 1_200,
+  placementAhead: 12,
+  placementSpacing: 4,
+  placementFinishMargin: 3,
+  placementMax: 20,
+  placementCooldownMs: 1_500,
   speeds: { slow: 1, normal: 1.8, turbo: 2.5 },
 } as const;
 
@@ -32,6 +42,15 @@ export interface Obstacle {
   progress: number;
   blockedLane: Lane;
   junctionId?: string;
+  route?: RouteChoice;
+  assetId?: string;
+  placedAt?: number;
+}
+
+export interface ObstaclePlacement {
+  assetId: string;
+  lane: Lane;
+  progress: number;
   route?: RouteChoice;
 }
 
@@ -52,17 +71,26 @@ export interface Racer {
   routeChoices?: Record<string, RouteChoice>;
   carCollisions?: number;
   lastCarCollisionAt?: number;
+  jumpStartedAt?: number;
+  jumpEndsAt?: number;
+  jumpReadyAt?: number;
+  spinStartedAt?: number;
+  spinEndsAt?: number;
+  spinProgress?: number;
+  spinLane?: number;
 }
 
 export interface RaceEvent {
   at: number;
-  type: "joined" | "ready" | "countdown" | "race_started" | "lane_change" | "speed_change" | "route_change" | "route_entered" | "car_collision" | "collision" | "finished";
+  type: "joined" | "ready" | "countdown" | "race_started" | "lane_change" | "speed_change" | "route_change" | "route_entered" | "car_collision" | "collision" | "finished" | "jump_started" | "jump_landed" | "spin_started" | "spin_ended" | "obstacle_avoided" | "obstacle_placed";
   playerId?: PlayerId;
   obstacleId?: string;
   lane?: Lane;
   speedMode?: SpeedMode;
   junctionId?: string;
   route?: RouteChoice;
+  assetId?: string;
+  progress?: number;
 }
 
 interface CarContact { axis: "progress" | "lane"; direction: number }
@@ -83,12 +111,17 @@ export interface RaceState {
   history: RaceEvent[];
   /** Private contact latch: one impact per continuous contact, independent of polls. */
   carContact?: CarContact;
+  lastObstaclePlacedAt?: number;
+  placedObstacleCount?: number;
 }
 
 export type PublicRacer = Omit<Racer, "nextObstacleIndex"> & {
   speed: number;
   laneVelocity: number;
   upcomingObstacles: Obstacle[];
+  jumpAvailable: boolean;
+  jumpCooldownRemainingMs: number;
+  spinRemainingMs: number;
 };
 export type PublicRaceState = Omit<RaceState, "players" | "carContact"> & {
   players: Record<PlayerId, PublicRacer>;
@@ -140,6 +173,19 @@ function log(state: RaceState, event: RaceEvent): void {
 
 function movingSpeed(player: Racer, at: number, origin = 0): number {
   return RACE_RULES.speeds[player.speedMode] * (at < player.slowedUntil - origin - EPSILON ? RACE_RULES.collisionSpeedMultiplier : 1);
+}
+
+function isAirborne(player: Pick<Racer, "jumpStartedAt" | "jumpEndsAt">, at: number, origin = 0): boolean {
+  return player.jumpStartedAt !== undefined && at >= player.jumpStartedAt - origin - EPSILON && at < (player.jumpEndsAt ?? 0) - origin - EPSILON;
+}
+
+function isSpinning(player: Pick<Racer, "spinStartedAt" | "spinEndsAt">, at: number, origin = 0): boolean {
+  return player.spinStartedAt !== undefined && at >= player.spinStartedAt - origin - EPSILON && at < (player.spinEndsAt ?? 0) - origin - EPSILON;
+}
+
+/** A stopped car cannot have a future arrival; avoid 0 / 0 at a gate. */
+function arrivalTime(cursor: number, distance: number, speed: number): number {
+  return distance <= EPSILON ? cursor : speed > EPSILON ? cursor + distance / speed * 1000 : Infinity;
 }
 
 export function createRace(seed: string | number, now: number): RaceState {
@@ -298,8 +344,10 @@ function motionAt(state: RaceState, at: number, origin = 0): Motion {
   const lane = { red: 0, blue: 0 };
   for (const id of IDS) {
     const player = state.players[id];
-    speed[id] = movingSpeed(player, at, origin) * routeSpeedMultiplier(state.course, player);
-    lane[id] = Math.abs(player.targetLane - player.lane) > EPSILON ? Math.sign(player.targetLane - player.lane) * RACE_RULES.laneChangePerSecond : 0;
+    if (!isSpinning(player, at, origin)) {
+      speed[id] = movingSpeed(player, at, origin) * routeSpeedMultiplier(state.course, player);
+      lane[id] = Math.abs(player.targetLane - player.lane) > EPSILON ? Math.sign(player.targetLane - player.lane) * RACE_RULES.laneChangePerSecond : 0;
+    }
   }
   if (state.carContact && shareRoad(state)) {
     const { axis, direction } = state.carContact;
@@ -372,9 +420,23 @@ function registerCarContact(state: RaceState, contact: ContactEvent, at: number)
     const rear = contact.direction > 0 ? red : blue;
     rear.progress = Math.min(rear.progress, front.progress - RACE_RULES.carLength);
   } else {
-    const middle = Math.max(RACE_RULES.carWidth / 2, Math.min(2 - RACE_RULES.carWidth / 2, (red.lane + blue.lane) / 2));
-    red.lane = middle - contact.direction * RACE_RULES.carWidth / 2;
-    blue.lane = middle + contact.direction * RACE_RULES.carWidth / 2;
+    const redSpinning = isSpinning(red, at);
+    const blueSpinning = isSpinning(blue, at);
+    if (redSpinning || blueSpinning) {
+      // A banana's impact position is an anchor, including when another car hits it.
+      const fixed = redSpinning ? red : blue;
+      const other = redSpinning ? blue : red;
+      if (!(redSpinning && blueSpinning)) {
+        let direction = Math.sign(other.lane - fixed.lane) || (redSpinning ? contact.direction : -contact.direction);
+        if (fixed.lane + direction * RACE_RULES.carWidth < 0 || fixed.lane + direction * RACE_RULES.carWidth > 2) direction *= -1;
+        other.lane = fixed.lane + direction * RACE_RULES.carWidth;
+        state.carContact.direction = Math.sign(blue.lane - red.lane) || 1;
+      }
+    } else {
+      const middle = Math.max(RACE_RULES.carWidth / 2, Math.min(2 - RACE_RULES.carWidth / 2, (red.lane + blue.lane) / 2));
+      red.lane = middle - contact.direction * RACE_RULES.carWidth / 2;
+      blue.lane = middle + contact.direction * RACE_RULES.carWidth / 2;
+    }
   }
   for (const id of IDS) {
     const player = state.players[id];
@@ -420,6 +482,7 @@ function advanceInteractive(source: RaceState, now: number): RaceState {
         continue;
       }
       let nextTime = until;
+      const previousCursor = cursor;
       const contactAt = contact ? cursor + contact.seconds * 1000 : Infinity;
       nextTime = Math.min(nextTime, contactAt);
       const gates: Partial<Record<PlayerId, { gate: Obstacle; index: number; at: number }>> = {};
@@ -430,20 +493,23 @@ function advanceInteractive(source: RaceState, now: number): RaceState {
         const player = state.players[id];
         const slowdownEnd = player.slowedUntil - origin;
         if (slowdownEnd > cursor + EPSILON) nextTime = Math.min(nextTime, slowdownEnd);
+        for (const end of [player.jumpEndsAt, player.spinEndsAt]) {
+          if (end !== undefined && end - origin > cursor + EPSILON) nextTime = Math.min(nextTime, end - origin);
+        }
         if (motion.lane[id] !== 0) {
           laneEnds[id] = cursor + Math.abs((player.targetLane - player.lane) / motion.lane[id]) * 1000;
           nextTime = Math.min(nextTime, laneEnds[id]);
         }
         const next = nextGate(state, player);
         if (next) {
-          gates[id] = { ...next, at: cursor + Math.max(0, next.gate.progress - player.progress) / motion.speed[id] * 1000 };
+          gates[id] = { ...next, at: arrivalTime(cursor, next.gate.progress - player.progress, motion.speed[id]) };
           nextTime = Math.min(nextTime, gates[id].at);
         }
-        finishes[id] = cursor + Math.max(0, state.course.length - player.progress) / motion.speed[id] * 1000;
+        finishes[id] = arrivalTime(cursor, state.course.length - player.progress, motion.speed[id]);
         nextTime = Math.min(nextTime, finishes[id]);
         const boundary = state.course.junctions?.flatMap(j => [j.start, j.end]).find(progress => progress > player.progress + EPSILON);
         if (boundary !== undefined) {
-          routeBounds[id] = { progress: boundary, at: cursor + (boundary - player.progress) / motion.speed[id] * 1000 };
+          routeBounds[id] = { progress: boundary, at: arrivalTime(cursor, boundary - player.progress, motion.speed[id]) };
           nextTime = Math.min(nextTime, routeBounds[id].at);
         }
       }
@@ -471,6 +537,11 @@ function advanceInteractive(source: RaceState, now: number): RaceState {
       cursor = nextTime;
       for (const id of IDS) {
         const player = state.players[id];
+        for (const [end, type] of [[player.jumpEndsAt, "jump_landed"], [player.spinEndsAt, "spin_ended"]] as const) {
+          if (end !== undefined && end - origin > previousCursor + EPSILON && end - origin <= cursor + EPSILON) {
+            log(state, { at: end, type, playerId: id });
+          }
+        }
         const entry = state.course.junctions?.find(j => Math.abs(j.start - player.progress) <= EPSILON);
         if (entry) {
           player.routeChoices ??= {};
@@ -481,9 +552,22 @@ function advanceInteractive(source: RaceState, now: number): RaceState {
         if (crossed && player.progress >= crossed.gate.progress - EPSILON) {
           player.nextObstacleIndex = crossed.index + 1;
           if (Math.abs(player.lane - crossed.gate.blockedLane) <= RACE_RULES.collisionHalfWidth + EPSILON) {
-            player.collisionCount++;
-            player.slowedUntil = Math.max(player.slowedUntil, origin + cursor + RACE_RULES.collisionSlowMs);
-            log(state, { at: origin + cursor, type: "collision", playerId: id, obstacleId: crossed.gate.id });
+            const at = origin + cursor;
+            if (isAirborne(player, cursor, origin)) {
+              log(state, { at, type: "obstacle_avoided", playerId: id, obstacleId: crossed.gate.id });
+            } else {
+              player.collisionCount++;
+              log(state, { at, type: "collision", playerId: id, obstacleId: crossed.gate.id });
+              if (crossed.gate.assetId === "banana_peel") {
+                player.spinStartedAt = at;
+                player.spinEndsAt = at + RACE_RULES.spinMs;
+                player.spinProgress = player.progress;
+                player.spinLane = player.lane;
+                log(state, { at, type: "spin_started", playerId: id, obstacleId: crossed.gate.id });
+              } else {
+                player.slowedUntil = Math.max(player.slowedUntil, at + RACE_RULES.collisionSlowMs);
+              }
+            }
           }
         }
       }
@@ -515,10 +599,71 @@ export function cancelRace(source: RaceState, now: number): RaceState {
   return state;
 }
 
+/** Validate inside the same storage CAS as driving; no rejected operation is persisted. */
+export function placeObstacle(source: RaceState, input: ObstaclePlacement, now: number, obstacleId: string): RaceState {
+  if (!input || typeof input !== "object" || !getObstacleAsset(input.assetId)) {
+    throw new RaceRuleError("INVALID_INPUT", "選択した障害物は設置できません");
+  }
+  if (![0, 1, 2].includes(input.lane) || !Number.isFinite(input.progress)) {
+    throw new RaceRuleError("INVALID_INPUT", "レーンと設置位置を正しく指定してください");
+  }
+  if (input.route !== undefined && !["left", "right"].includes(input.route)) {
+    throw new RaceRuleError("INVALID_INPUT", "分岐は左または右を指定してください");
+  }
+  if (typeof obstacleId !== "string" || !obstacleId.length || obstacleId.length > 128 || source.course.obstacles.some(obstacle => obstacle.id === obstacleId)) {
+    throw new RaceRuleError("INVALID_INPUT", "障害物の識別子が無効です");
+  }
+  const state = advance(source, now);
+  const at = state.updatedAt;
+  if (state.version !== 2 || state.phase !== "racing") {
+    throw new RaceRuleError("RACE_NOT_AVAILABLE", "障害物はレース中にのみ設置できます");
+  }
+  if (input.progress < 0 || input.progress > state.course.length - RACE_RULES.placementFinishMargin) {
+    throw new RaceRuleError("INVALID_INPUT", "コース内のゴール手前3以上の位置を指定してください");
+  }
+  const minimum = Math.max(...IDS.map(id => state.players[id].progress)) + RACE_RULES.placementAhead;
+  if (input.progress < minimum - EPSILON) {
+    throw new RaceRuleError("RACE_NOT_AVAILABLE", "両車より12以上前方に設置してください");
+  }
+  const junction = activeJunction(state.course, input.progress);
+  if (junction && input.route === undefined) throw new RaceRuleError("INVALID_INPUT", "分岐内に設置する場合は左または右を選択してください");
+  if (!junction && input.route !== undefined) throw new RaceRuleError("INVALID_INPUT", "分岐の外ではメインコースを選択してください");
+  const placedCount = Math.max(state.placedObstacleCount ?? 0, state.course.obstacles.filter(obstacle => obstacle.placedAt !== undefined).length);
+  if (placedCount >= RACE_RULES.placementMax) throw new RaceRuleError("RACE_NOT_AVAILABLE", "設置できる障害物は1レース20個までです");
+  if (state.lastObstaclePlacedAt !== undefined && at < state.lastObstaclePlacedAt + RACE_RULES.placementCooldownMs) {
+    throw new RaceRuleError("RACE_NOT_AVAILABLE", "連続設置は1.5秒以上間隔をあけてください");
+  }
+  const overlaps = state.course.obstacles.some(obstacle => {
+    if (obstacle.blockedLane !== input.lane || Math.abs(obstacle.progress - input.progress) >= RACE_RULES.placementSpacing - EPSILON) return false;
+    // Opposite branches are separate surfaces. At their entrance and merge,
+    // retain the spacing from main-road obstacles on either side of the seam.
+    return !(junction && obstacle.junctionId === junction.id && obstacle.route && obstacle.route !== input.route);
+  });
+  if (overlaps) throw new RaceRuleError("RACE_NOT_AVAILABLE", "同じレーンの障害物から4以上離して設置してください");
+  const obstacle: Obstacle = {
+    id: obstacleId, assetId: input.assetId, progress: input.progress, blockedLane: input.lane, placedAt: at,
+    ...(junction ? { junctionId: junction.id, route: input.route } : {}),
+  };
+  let index = state.course.obstacles.findIndex(existing => existing.progress > obstacle.progress);
+  if (index === -1) index = state.course.obstacles.length;
+  state.course.obstacles.splice(index, 0, obstacle);
+  for (const id of IDS) {
+    // The cursor means "all earlier array entries have been passed/skipped".
+    // Preserve those entries after insertion, while an insertion exactly at
+    // the cursor remains unprocessed. Nothing rebuilds the cursor from a
+    // selected route: that could skip newly added gates or replay old ones.
+    if (index < state.players[id].nextObstacleIndex) state.players[id].nextObstacleIndex++;
+  }
+  state.lastObstaclePlacedAt = at;
+  state.placedObstacleCount = placedCount + 1;
+  log(state, { at, type: "obstacle_placed", obstacleId, assetId: input.assetId, lane: input.lane, progress: input.progress, ...(junction ? { junctionId: junction.id, route: input.route } : {}) });
+  return state;
+}
+
 /** Validate and apply one persistent control. Call within your storage CAS loop. */
 export function applyInput(source: RaceState, playerId: PlayerId, input: RaceInput, now: number): RaceState {
   if (!IDS.includes(playerId) || !input || typeof input !== "object") throw new RaceRuleError("INVALID_INPUT", "Invalid player or input");
-  if (!["join", "ready", "lane", "speed", "route"].includes(input.type)) throw new RaceRuleError("INVALID_INPUT", "Unknown control");
+  if (!["join", "ready", "lane", "speed", "route", "jump"].includes(input.type)) throw new RaceRuleError("INVALID_INPUT", "Unknown control");
   if (input.type === "lane" && ![0, 1, 2].includes(input.lane)) throw new RaceRuleError("INVALID_INPUT", "Lane must be 0, 1, or 2");
   if (input.type === "speed" && !["slow", "normal", "turbo"].includes(input.speed)) throw new RaceRuleError("INVALID_INPUT", "Unknown speed mode");
   if (input.type === "route" && (typeof input.junctionId !== "string" || !["left", "right"].includes(input.route))) throw new RaceRuleError("INVALID_INPUT", "Unknown route");
@@ -547,6 +692,15 @@ export function applyInput(source: RaceState, playerId: PlayerId, input: RaceInp
       state.countdownEndsAt = at + RACE_RULES.countdownMs;
       log(state, { at, type: "countdown" });
     }
+  } else if (input.type === "jump") {
+    if (state.version !== 2 || state.phase !== "racing") throw new RaceRuleError("RACE_NOT_AVAILABLE", "ジャンプはレース中にのみ使用できます");
+    if (isAirborne(player, at)) throw new RaceRuleError("RACE_NOT_AVAILABLE", "空中では再ジャンプできません");
+    if (isSpinning(player, at)) throw new RaceRuleError("RACE_NOT_AVAILABLE", "スピンが終わるまでジャンプできません");
+    if (at < (player.jumpReadyAt ?? 0)) throw new RaceRuleError("RACE_NOT_AVAILABLE", "着地から2秒後に再びジャンプできます");
+    player.jumpStartedAt = at;
+    player.jumpEndsAt = at + RACE_RULES.jumpMs;
+    player.jumpReadyAt = player.jumpEndsAt + RACE_RULES.jumpCooldownMs;
+    log(state, { at, type: "jump_started", playerId });
   } else if (input.type === "lane") {
     if (input.lane !== player.targetLane) {
       player.targetLane = input.lane;
@@ -581,6 +735,9 @@ export function publicView(source: RaceState): PublicRaceState {
     const { nextObstacleIndex: _cursor, ...player } = state.players[id];
     return {
       ...player,
+      jumpAvailable: state.version === 2 && state.phase === "racing" && player.joined && !isAirborne(player, state.updatedAt) && !isSpinning(player, state.updatedAt) && state.updatedAt >= (player.jumpReadyAt ?? 0),
+      jumpCooldownRemainingMs: Math.max(0, (player.jumpReadyAt ?? 0) - state.updatedAt),
+      spinRemainingMs: Math.max(0, (player.spinEndsAt ?? 0) - state.updatedAt),
       speed: state.phase === "racing" ? motion?.speed[id] ?? movingSpeed(state.players[id], state.updatedAt) : 0,
       laneVelocity: state.phase === "racing" ? motion?.lane[id] ?? (Math.abs(player.targetLane - player.lane) > EPSILON ? Math.sign(player.targetLane - player.lane) * RACE_RULES.laneChangePerSecond : 0) : 0,
       upcomingObstacles: state.course.obstacles.filter((obstacle) => obstacle.progress > player.progress + EPSILON && obstacle.progress <= player.progress + RACE_RULES.visibleDistance && (state.version === 1 || appliesToRoute(state, state.players[id], obstacle))),

@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:workers';
-import { advance, applyInput, cancelRace, createRace, publicView, RaceRuleError, type RaceInput, type RaceState, type PlayerId } from '../../../../lib/race-engine';
+import { advance, applyInput, placeObstacle, cancelRace, createRace, publicView, RaceRuleError, type RaceInput, type RaceState, type PlayerId } from '../../../../lib/race-engine';
 import { isNarrationWav, sanitizeNarrationFeed, validGeneration } from '../../../../lib/narration-feed';
 import { isNewerDriveDecision, sanitizeDriveDecision } from '../../../../lib/drive-decision-feed';
 export const dynamic = 'force-dynamic';
@@ -72,6 +72,11 @@ async function handle(request:Request,context:{params:Promise<{path?:string[]}>}
   const result=await mutate(id,(state,found)=>{if(found.expires_at<Date.now())throw new HttpError('Player link expired',410);if(digest!==found[p==='red'?'red_hash':'blue_hash'])throw new HttpError('Wrong player link',403);return applyInput(state,p,input.input as RaceInput,Date.now());});return json(result);
  }
  await requireAdmin(request);await row(id);
+ if(path.length===2&&path[1]==='obstacles'){
+  const data=await body(request);
+  const obstacleId='placed-'+crypto.randomUUID().replaceAll('-','');
+  return json(await mutate(id,state=>placeObstacle(state,data,Date.now(),obstacleId)),201);
+ }
  if(path.length===2&&path[1]==='decisions'){
   const data=await body(request);const p=player(data.player);
   let decision;try{decision=sanitizeDriveDecision(data.decision);}catch{throw new HttpError('Invalid drive decision');}

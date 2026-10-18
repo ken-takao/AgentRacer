@@ -26,7 +26,7 @@ test('uses the actual screenshot and typed Decisions questions, not hidden game 
     assert.match(body.input[0].content[0].text, /SCARLET, the RED car/);
     assert.match(body.input[0].content[0].text, /opponent is COBALT/);
     assert.deepEqual(body.questions.map(q => [q.name, q.type]), [['action', 'choice'], ['obstacle_risk', 'predicate'], ['rival_risk', 'predicate']]);
-    assert.equal(body.questions[0].choices.length, 9);
+    assert.equal(body.questions[0].choices.length, 10);
     clock += 450;
     return response(answers());
   } });
@@ -103,4 +103,15 @@ test('an eight-second deadline aborts even a fetch implementation that does not 
   t.mock.timers.tick(8000);
   await rejected;
   assert.equal(requestSignal.aborted, true);
+});
+
+ test('jump is a fixed Computer Use click and its instructions include the short airborne window', async () => {
+  const result = await decideDrive({ ...input, fetchImpl: async (_, init) => {
+    const body = JSON.parse(init.body);
+    assert.match(body.input[0].content[0].text, /0.8 seconds/);
+    assert.match(body.input[0].content[0].text, /Banana peels stop/);
+    assert.ok(body.questions[0].choices.some(c => c.value === 'jump'));
+    return response(answers('jump'));
+  }});
+  assert.equal(result.instruction, 'Click JUMP once in 04 / AIR JUMP.');
 });

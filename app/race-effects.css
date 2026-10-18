@@ -1,0 +1,6 @@
+.jump-control{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:18px;padding:14px 16px;border:1px solid #a3dff53d;border-radius:12px;background:linear-gradient(120deg,#17425955,#102029)}
+.jump-control p{font-size:11px;color:#b4c9d3;line-height:1.5;margin:7px 0 0}
+.jump-button{display:grid;grid-template-columns:auto auto;align-items:center;gap:3px 8px;min-width:134px;padding:10px 16px;background:#b8eaff;color:#10212b;border:1px solid #d3f5ff;border-radius:8px;cursor:pointer;font:inherit}
+.jump-button b{font-size:19px;letter-spacing:2px}.jump-button small{grid-column:1/-1;font:700 10px ui-monospace,monospace}
+.jump-button:disabled{cursor:not-allowed;background:#243c48;color:#8cabbc;border-color:#385766}.jump-button:focus-visible{outline:3px solid white;outline-offset:3px}
+@media(max-width:900px){.jump-control{padding:9px;gap:8px;margin-top:12px}.jump-control p{font-size:9px}.jump-button{min-width:110px;padding:8px}.jump-button b{font-size:16px}}

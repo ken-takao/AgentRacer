@@ -1,10 +1,28 @@
 import { RACE_RULES } from "./race-engine.ts";
 import { activeJunction, selectedRoute, type CourseFeatures, type RouteChoice } from "./race-course.ts";
+import type { RaceEffectState } from "./race-effects.ts";
 type Snapshot = {
-  phase: string; createdAt: number; updatedAt: number;
+  phase: string; createdAt: number; updatedAt: number; now?: number;
   version?: number; course?: CourseFeatures;
-  players: Record<"red" | "blue", { progress: number; lane: number; routeChoices?: Record<string, RouteChoice> }>;
+  players: Record<"red" | "blue", { progress: number; lane: number; routeChoices?: Record<string, RouteChoice> } & RaceEffectState>;
 };
+
+function interpolateWithStops(from: Snapshot["players"]["red"], to: Snapshot["players"]["red"], axis: "progress" | "lane", start: number, end: number, now: number) {
+  const anchors = [{ at: start, value: from[axis] }, { at: end, value: to[axis] }];
+  const stops = [from, to].filter((player, index, all) => player.spinStartedAt != null && player.spinEndsAt != null
+    && all.findIndex(p => p.spinStartedAt === player.spinStartedAt) === index);
+  for (const stop of stops) {
+    const value = axis === "progress" ? stop.spinProgress : stop.spinLane;
+    if (value == null || stop.spinEndsAt! <= start || stop.spinStartedAt! >= end) continue;
+    if (now >= stop.spinStartedAt! && now <= stop.spinEndsAt!) return value;
+    for (const at of [stop.spinStartedAt!, stop.spinEndsAt!]) if (at > start && at < end) anchors.push({ at, value });
+  }
+  anchors.sort((a, b) => a.at - b.at);
+  const right = anchors.findIndex(anchor => anchor.at >= now);
+  if (right <= 0) return anchors[0].value;
+  const a = anchors[right - 1], b = anchors[right];
+  return a.value + (b.value - a.value) * (now - a.at) / Math.max(1, b.at - a.at);
+}
 
 function remainOnSeparateBranches(previous: Snapshot, current: Snapshot) {
   if (!previous.course || !current.course || previous.course.layout !== current.course.layout) return false;
@@ -25,10 +43,7 @@ function remainOnSeparateBranches(previous: Snapshot, current: Snapshot) {
     && beforeRed.route !== beforeBlue.route;
 }
 
-function interpolationCrossesContact(previous: Snapshot, current: Snapshot) {
-  // Linear progress remains inside this same fork for the entire interval.
-  // Coincident distance/lane values on its two distinct roads are not contact.
-  if (remainOnSeparateBranches(previous, current)) return false;
+function linearSegmentCrossesContact(previous: Snapshot, current: Snapshot) {
   let entry = 0, exit = 1;
   for (const [axis, extent] of [["progress", RACE_RULES.carLength], ["lane", RACE_RULES.carWidth]] as const) {
     const start = previous.players.red[axis] - previous.players.blue[axis];
@@ -46,6 +61,32 @@ function interpolationCrossesContact(previous: Snapshot, current: Snapshot) {
   return entry < exit;
 }
 
+function interpolationCrossesContact(previous: Snapshot, current: Snapshot) {
+  // Coincident distance/lane values on two stable, distinct roads are not contact.
+  if (remainOnSeparateBranches(previous, current)) return false;
+  // A banana changes the display trajectory from one line to several segments.
+  // Test every segment, including the stopped part: checking endpoints alone can
+  // put a following car inside the stopped car even when both snapshots are safe.
+  const times = new Set([previous.updatedAt, current.updatedAt]);
+  for (const snapshot of [previous, current]) for (const player of Object.values(snapshot.players)) {
+    for (const at of [player.spinStartedAt, player.spinEndsAt]) {
+      if (at != null && at > previous.updatedAt && at < current.updatedAt) times.add(at);
+    }
+  }
+  const atTime = (now: number): Snapshot => ({
+    ...current,
+    players: Object.fromEntries((["red", "blue"] as const).map(id => {
+      const from = previous.players[id], to = current.players[id];
+      return [id, { ...to,
+        progress: interpolateWithStops(from, to, "progress", previous.updatedAt, current.updatedAt, now),
+        lane: interpolateWithStops(from, to, "lane", previous.updatedAt, current.updatedAt, now),
+      }];
+    })) as Snapshot["players"],
+  });
+  const knots = [...times].sort((a, b) => a - b).map(atTime);
+  return knots.some((snapshot, index) => index > 0 && linearSegmentCrossesContact(knots[index - 1], snapshot));
+}
+
 /** Display a short buffer of known positions; never predict beyond server collisions. */
 export function interpolateRace<T extends Snapshot>(previous: T | undefined, current: T, elapsedMs: number): T {
   if (!previous || current.phase !== "racing" || previous.phase !== "racing" || previous.createdAt !== current.createdAt || current.updatedAt <= previous.updatedAt) return current;
@@ -54,10 +95,16 @@ export function interpolateRace<T extends Snapshot>(previous: T | undefined, cur
   if (current.version === 2 && interpolationCrossesContact(previous, current)) return current;
   const duration = Math.max(1, Math.min(1000, current.updatedAt - previous.updatedAt));
   const t = Math.min(1, Math.max(0, Number.isFinite(elapsedMs) ? elapsedMs / duration : 0));
+  const now = previous.updatedAt + (current.updatedAt - previous.updatedAt) * t;
   const players = { ...current.players };
   for (const id of ["red", "blue"] as const) {
     const from = previous.players[id], to = current.players[id];
-    players[id] = { ...to, progress: from.progress + (to.progress - from.progress) * t, lane: from.lane + (to.lane - from.lane) * t };
+    players[id] = { ...to,
+      progress: interpolateWithStops(from, to, "progress", previous.updatedAt, current.updatedAt, now),
+      lane: interpolateWithStops(from, to, "lane", previous.updatedAt, current.updatedAt, now),
+    };
   }
-  return { ...current, players };
+  // Effect endpoints may arrive after a short jump has already ended. Replaying
+  // them against this same buffered clock preserves the full jump and landing.
+  return { ...current, now, players };
 }
