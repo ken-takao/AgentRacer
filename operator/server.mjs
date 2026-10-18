@@ -767,7 +767,7 @@ export async function createOperatorServer({ port = Number(process.env.OPERATOR_
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const operator = await createOperatorServer();
   const port = Number(process.env.OPERATOR_PORT || 4180);
-  operator.server.listen(port, '127.0.0.1', () => console.log(`Agent Grand Prix operator: http://127.0.0.1:${port}`));
+  operator.server.listen(port, '127.0.0.1', () => console.log(`AgentRacer operator: http://127.0.0.1:${port}`));
   let closing = false;
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
     if (closing) return;

@@ -18,7 +18,7 @@ const directionNames: Record<string, string> = {
 export default function AssetPreviewPage() {
   return <main className="asset-preview">
     <header className="asset-preview-header">
-      <div><span className="asset-eyebrow">AGENT GRAND PRIX / ASSET REVIEW</span><h1>Roadsterと障害物の素材</h1><p>配信中の2D画像を一覧で確認できます。画像を開くと元サイズで表示します。</p></div>
+      <div><span className="asset-eyebrow">AgentRacer / ASSET REVIEW</span><h1>Roadsterと障害物の素材</h1><p>配信中の2D画像を一覧で確認できます。画像を開くと元サイズで表示します。</p></div>
       <a href="/preview/roadster">走行プレビューへ →</a>
     </header>
 

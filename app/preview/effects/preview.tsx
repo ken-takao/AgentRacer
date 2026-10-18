@@ -54,7 +54,7 @@ export function EffectsPreviewScreen() {
   };
   const redEffect = raceEffectsAt(frame.players.red, frame.now!), blueEffect = raceEffectsAt(frame.players.blue, frame.now!);
   return <main className="effects-preview">
-    <header><div><small>AGENT GRAND PRIX / VISUAL FIXTURE</small><h1>ジャンプ・スピン・障害物</h1><p>表示確認用のデモです。実際のレース、サーバーの衝突判定、AI操作は実行しません。</p></div><a href="/">ホームへ</a></header>
+    <header><div><small>AgentRacer / VISUAL FIXTURE</small><h1>ジャンプ・スピン・障害物</h1><p>表示確認用のデモです。実際のレース、サーバーの衝突判定、AI操作は実行しません。</p></div><a href="/">ホームへ</a></header>
     <div className="effects-preview-controls">
       <button onClick={jump} disabled={(frame.players.red.jumpReadyAt ?? 0) > frame.now!}>SCARLET JUMP {redEffect.airborne ? "空中" : (frame.players.red.jumpReadyAt ?? 0) > frame.now! ? `${((frame.players.red.jumpReadyAt! - frame.now!) / 1000).toFixed(1)}s` : "READY"}</button>
       <button onClick={spin} disabled={blueEffect.spinning}>COBALT SPIN {blueEffect.spinning ? `${(blueEffect.spinRemainingMs / 1000).toFixed(1)}s` : "1.2s"}</button>

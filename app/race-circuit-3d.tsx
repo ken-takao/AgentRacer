@@ -257,7 +257,7 @@ export function RaceCircuit3D({ race, decorative = false, onUnavailable, sampleR
       batch.matrices.forEach((matrix, index) => mesh.setMatrixAt(index, matrix));
       mesh.instanceMatrix.needsUpdate = true; mesh.castShadow = true; mesh.receiveShadow = true; batch.parent.add(mesh);
     }
-    textPlane(complex ? COURSE_NAMES[course.layout!] : "AGENT GRAND PRIX", 38, "#b5d4c4", 0, -0.35, complex ? -62 : 0);
+    textPlane(complex ? COURSE_NAMES[course.layout!] : "AgentRacer", 38, "#b5d4c4", 0, -0.35, complex ? -62 : 0);
     scene.add(new THREE.HemisphereLight(0xc5e9ff, 0x354936, 2.3));
     const sun = new THREE.DirectionalLight(0xfff1d4, 3.4); sun.position.set(-45, 115, 60); sun.castShadow = true; sun.shadow.mapSize.set(1024, 1024);
     Object.assign(sun.shadow.camera, { left: -145, right: 145, top: 110, bottom: -110, near: 1, far: 250 }); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.05; scene.add(sun);

@@ -47,7 +47,7 @@ const PHASE_LABELS = { lobby: "ドライバー接続待ち", countdown: "スタ�
 const enc = encodeURIComponent;
 
 function Brand() {
-  return <a className="brand brand-logo" href="/" aria-label="Agent Racer ホーム"><img src="/branding/agentracer-logo.png" alt="agentracer" width={2172} height={724} fetchPriority="high" /></a>;
+  return <a className="brand brand-logo" href="/" aria-label="AgentRacer ホーム"><img src="/branding/agentracer-logo.png" alt="AgentRacer" width={2172} height={724} fetchPriority="high" /></a>;
 }
 function SiteHeader({ live = false }: { live?: boolean }) {
   return <header className="site-header"><Brand /><div className="header-right"><span className="api-label">POWERED BY <strong>OPENAI AGENTS API</strong></span><span className={`live-pill ${live ? "is-live" : ""}`}><i />{live ? "LIVE RACE" : "COMPUTER USE"}</span></div></header>;
@@ -306,7 +306,7 @@ export function NarrationPreviewScreen() {
     </main>
   </div>;
 }
-function Footer() { return <footer className="site-footer"><span>AGENT GRAND PRIX</span><span>BUILT WITH OPENAI AGENTS API + COMPUTER USE</span><span>DEMO / 2026</span></footer>; }
+function Footer() { return <footer className="site-footer"><span>AgentRacer</span><span>BUILT WITH OPENAI AGENTS API + COMPUTER USE</span><span>DEMO / 2026</span></footer>; }
 function Progress({ race }: { race: Race }) {
   return <div className="progress-board">{(["red", "blue"] as PlayerId[]).map(id => <div className={`progress-row ${id}`} key={id}><b>{NAMES[id]}</b><div className="progress-rail"><div style={{ width: `${Math.min(100, race.players[id].progress / race.course.length * 100)}%`, background: COLORS[id] }} /><span className="finish-marker"><Flag size={12} /></span></div><strong>{Math.floor(race.players[id].progress / race.course.length * 100)}<small>%</small></strong></div>)}</div>;
 }

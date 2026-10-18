@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Agent Grand Prix — Two agents. One finish line.",
+  title: "AgentRacer",
   description: "2つのAIエージェントが、画面を見て、リアルタイムで競う。Agents API Computer Useのレーシングデモ。",
 };
 

@@ -19,7 +19,7 @@ export function RoutesPreviewScreen() {
     return next;
   });
   return <main className="routes-preview">
-    <header><div><small>AGENT GRAND PRIX / ROUTE INSPECTION</small><h1>分岐・路面の表示検証</h1><p>停止したサーバー形式のレース状態を表示します。速度・衝突判定や実際のレースは変更しません。</p></div><a href="/">ホーム</a></header>
+    <header><div><small>AgentRacer / ROUTE INSPECTION</small><h1>分岐・路面の表示検証</h1><p>停止したサーバー形式のレース状態を表示します。速度・衝突判定や実際のレースは変更しません。</p></div><a href="/">ホーム</a></header>
     <section className="routes-preview-controls" aria-label="検証条件">
       <label>コース<select value={options.layout} onChange={event => change({ layout: event.target.value as FixtureOptions["layout"], progress: undefined })}>{["harbor", "alpine", "metro"].map(layout => <option key={layout}>{layout}</option>)}</select></label>
       <label>分岐<select value={options.junction} onChange={event => change({ junction: Number(event.target.value) as 1 | 2, progress: undefined })}><option value="1">01</option><option value="2">02</option></select></label>

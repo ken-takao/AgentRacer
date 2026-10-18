@@ -32,7 +32,7 @@ AIの準備中は55秒を目安にタイムゲージと各ドライバーの接�
 
 Roadsterの10色のGLBと色一覧は `public/models/tesla-roadster/` にあります。コースでは赤・青を表示し、WebGLを使えない環境ではSVGの車を表示します。8方向・上面スプライトとシートは `public/models/tesla-roadster/sprites/` にあります。
 
-元の10台サーキット試作は `public/roadster-circuit/` に、実行に必要な車体と13種類の小物とともに保存しています。開発サーバー上の `/roadster-circuit/race.html` で確認できます。コースは `race.html` のThree.jsコードが生成しており、コース単体のGLBはありません。この試作はAgent Grand Prixのレース処理とは独立しています。
+元の10台サーキット試作は `public/roadster-circuit/` に、実行に必要な車体と13種類の小物とともに保存しています。開発サーバー上の `/roadster-circuit/race.html` で確認できます。コースは `race.html` のThree.jsコードが生成しており、コース単体のGLBはありません。この試作はAgentRacerのレース処理とは独立しています。
 
 障害物を含む小物13種類の3Dモデル、斜め視点・見下ろし視点の透過PNG、2DアトラスとZIPは `public/roadster-circuit/props/` にあります。各ファイルの対応は同フォルダの `manifest.json` を参照してください。`kind: "obstacle"` の素材は、オペレーターの配置UIと、3D観戦・2Dドライバー画面の障害物表示に使います。配置条件と効果はサーバーが判定します。詳細は [READMEの障害物配置](../README.md#エアジャンプと人間の障害物配置) を参照してください。
 

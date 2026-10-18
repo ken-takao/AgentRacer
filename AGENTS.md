@@ -1,4 +1,4 @@
-# Agent Grand Prix development guide
+# AgentRacer development guide
 
 These instructions apply to the entire repository. Read `README.md` for the
 product and `operator/README.md` before changing the operator or AI integrations.
