@@ -1,0 +1,23 @@
+/* The supplied 2172×724 PNG has its visible mark at y=209…488.
+   Crop only the transparent padding; preserve the original image and its ratio. */
+.brand.brand-logo {
+  display: block;
+  width: 280px;
+  max-width: 46vw;
+  aspect-ratio: 7 / 1;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.brand-logo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 48%;
+}
+.brand-logo:focus-visible { outline: 2px solid var(--lime); outline-offset: 5px; border-radius: 3px; }
+.spectator-shell > .site-header .brand-logo,
+.cockpit-header .brand-logo { width: 224px; }
+@media (max-width: 600px) {
+  .brand.brand-logo { width: 182px; }
+}
