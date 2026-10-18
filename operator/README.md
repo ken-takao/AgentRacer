@@ -1,6 +1,6 @@
 # Local race operator
 
-This Node 22 server launches **two independent Agents API hosted Computer Use sessions**. Each agent joins its own capability URL and drives through the visible game controls. The public race clock is independent of the agents' turns. The operator never supplies a driving policy, sends direct player inputs, or substitutes a scripted bot.
+This Node 22 server launches **two independent Agents API hosted Computer Use sessions**. Each agent joins its own capability URL and drives through the visible game controls. The public race clock is independent of the agents' turns. Decisions API (`gpt-6-luna`) is the driving strategist: it selects one action from the latest screenshot, and the Computer Use agent executes that action. The operator never sends direct player inputs or substitutes a scripted bot.
 
 ## Run
 
@@ -33,11 +33,12 @@ After completion or cancellation, **新しいレースを開始** creates a new 
 - Uses `gpt-6-astra`, `computer_use`, `include_screenshots: true`, and one isolated hosted environment per driver.
 - Opens both SSE streams before submitting the player URLs.
 - Approves only the configured game origin, as authorized for this demo. Other origins are denied; login prompts are cancelled.
-- Lane and speed decisions come from each agent's visible browser interaction. Instructions prohibit DOM inspection, scripts, direct network calls, and state manipulation; the hosted API does not provide a separately enforceable image-only mode.
+- Each agent calls `decide_drive({})` after a fresh screenshot. The operator passes only that image and fixed driving rules to Decisions API, which chooses one enumerated lane, speed, route or wait action. It also estimates immediate obstacle and rival risk. Only fixed, validated instructions return to Computer Use; the full game state and future obstacle map are never model inputs. Repeat calls on the same frame or stale results are rejected. Three consecutive API failures stop the race instead of silently returning to autonomous CU decisions.
+- The screenshot comes from that player's own session, selected by the server, not tool arguments. Instructions prohibit DOM inspection, scripts, direct network calls, and state manipulation; the hosted API does not provide a separately enforceable image-only mode.
 - A session that completes its turn before the game ends can receive up to three continuation messages in the same browser.
 - Browser screenshots arrive after tool activities and may be absent for some activities. They are snapshots, not a video stream.
 - Stops on game completion, cancellation, stream/API failure, or an eight-minute preparation-and-race limit.
-- Saves a credential-free result record to the project's ignored `work/race-live-check.json`, including the two session IDs, captured image counts, observed game result, and confirmed deletion status. `finalState` retains the public server state, player progress/collisions, and recent control history. `drivingInputs` counts lane/speed changes in that history, separately from READY and browser activity; `computerUseVerified` and `drivingVerified` are distinct checks.
+- Saves a credential-free result record to the project's ignored `work/race-live-check.json`, including the two session IDs, captured image counts, observed game result, and confirmed deletion status. `finalState` retains the public server state, player progress/collisions, and recent control history. `drivingInputs` counts lane/speed changes in that history, separately from READY and browser activity; `computerUseVerified`, `drivingVerified`, and `decisionsVerified` are distinct checks. Per-player `decisions`, `decisionErrors`, and `lastDecision` record Decisions invocations separately from observed game inputs. A returned decision is not itself proof that a click succeeded.
 
 The dashboard is a local operator surface. Only same-origin JSON POST requests can start or stop a race; Host headers outside localhost are rejected. The public game does not receive the OpenAI API key.
 
@@ -50,3 +51,11 @@ The operator sends paced silent PCM to maintain GPT-Live's input timeline. Spect
 The spectator reserves roughly three seconds of published audio, displays a character speech bubble even with sound off, and enables audio after the viewer presses **実況を聴く**. GPT-Live transcript timestamps describe approximate session time, not PCM sample positions; captions are mapped to the received audio position for approximate phrase synchronization. The audio itself stays in its original order and is not stretched or padded. A monotonic input clock avoids accumulating timer drift, and a playback buffer absorbs publication jitter. BGM is reduced during audible commentary. Playback rejoins the live edge after interruption rather than replaying old calls. `/preview/narration` provides an explicitly labeled recorded GPT-Live sample without starting an API session.
 
 Commentary has a five-minute maximum and closes when the race finishes or stops. A normal finish allows a short final call before closing and records whether `session.closed` and final usage were received. Narrator failures do not stop the drivers. The feed uses generations and monotonically increasing revisions so delayed uploads cannot replace a newer ending. Voice duration is billable during preparation and silence as well as speaking. Archived audio is retained with race assets; R2 retention is a separate operational policy.
+
+## Decisions API
+
+The visual decision client is `operator/drive-decisions.mjs`. It uses `POST /v1/decisions` with a choice question plus two hazard predicates. This is in addition to each Agents API session and optional GPT-Live session. The screenshot expires after 12 seconds and a request times out after 8 seconds. These limits do not remove Computer Use latency, so this mode is not guaranteed faster than a direct CU strategy. Physical collisions remain deterministic in the game engine.
+
+The public `/api/races/:id/decisions` feed contains only allowlisted decisions and metrics; writes require the race admin key and are ordered by timestamp/count. Older races can have no decision feed. Deploy the site update before starting this operator.
+
+References: [Decisions API](https://developers.openai.com/api/docs/guides/decisions), [Agents API functions](https://developers.openai.com/api/docs/guides/agents-api/tools/functions).

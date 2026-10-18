@@ -70,6 +70,16 @@
 .spectator-shell .camera-footer { flex-shrink: 0; min-height: 23px; padding: 5px 10px; font-size: 7px; letter-spacing: .2px; }
 .spectator-shell .camera-footer > span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .spectator-shell .camera-footer > span:last-child { flex-shrink: 0; }
+.decision-strip { flex-shrink: 0; padding: 7px 10px; border-top: 1px solid #ffffff0b; background: #0c151b; }
+.decision-strip-heading, .decision-strip-choice { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.decision-strip-heading { margin-bottom: 5px; font: 8px var(--font-mono); letter-spacing: .7px; color: #a7b3b9; }
+.decision-strip-heading > span { display: flex; align-items: center; gap: 5px; }
+.decision-strip-heading i { width: 4px; height: 4px; background: #687780; border-radius: 50%; }
+.decision-current .decision-strip-heading > span { color: var(--lime); }
+.decision-current .decision-strip-heading i { background: var(--lime); box-shadow: 0 0 8px #d8ed9466; }
+.decision-strip-heading small { font-size: 8px; letter-spacing: 0; white-space: nowrap; color: #8b9ca6; }
+.decision-strip-choice strong { font-size: 11px; line-height: 1.4; font-weight: 700; color: #e3e9df; }
+.decision-strip-choice small { font-size: 8px; color: #92a3ad; white-space: nowrap; }
 .spectator-shell .camera-expanded { position: fixed; z-index: 50; inset: 3dvh 5vw; border: 1px solid #60747c; border-radius: 9px; }
 .spectator-shell .camera-expanded .camera-header { padding: 10px 16px; }
 .spectator-shell .camera-expanded .camera-content { min-height: 0; }

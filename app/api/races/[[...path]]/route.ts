@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { advance, applyInput, cancelRace, createRace, publicView, RaceRuleError, type RaceInput, type RaceState, type PlayerId } from '../../../../lib/race-engine';
 import { isNarrationWav, sanitizeNarrationFeed, validGeneration } from '../../../../lib/narration-feed';
+import { isNewerDriveDecision, sanitizeDriveDecision } from '../../../../lib/drive-decision-feed';
 export const dynamic = 'force-dynamic';
 const json = (data: unknown, status = 200) => Response.json(data, {status, headers:{'Cache-Control':'no-store'}});
 class HttpError extends Error { constructor(message:string, public status=400){super(message);} }
@@ -31,6 +32,13 @@ async function handle(request:Request,context:{params:Promise<{path?:string[]}>}
   if(path.length===1&&path[0]==='latest'){const latest=await db().prepare('SELECT id FROM races ORDER BY created_at DESC LIMIT 1').first<{id:string}>();return json({id:latest?.id||null});}
   const id=validId(path[0]||'');const found=await row(id);
   if(path.length===1)return json(await view(found));
+  if(path.length===2&&path[1]==='decisions'){
+   const decisions=await Promise.all((['red','blue'] as const).map(async p=>{
+    const record=await bucket().get(`${id}/decisions/${p}.json`);
+    return record?sanitizeDriveDecision(await record.json()):null;
+   }));
+   return json({red:decisions[0],blue:decisions[1]});
+  }
   if(path.length===2&&path[1]==='narration'){
    const feed=await bucket().get(`${id}/narration/feed.json`);
    if(!feed)throw new HttpError('Narration not started',404);
@@ -64,6 +72,19 @@ async function handle(request:Request,context:{params:Promise<{path?:string[]}>}
   const result=await mutate(id,(state,found)=>{if(found.expires_at<Date.now())throw new HttpError('Player link expired',410);if(digest!==found[p==='red'?'red_hash':'blue_hash'])throw new HttpError('Wrong player link',403);return applyInput(state,p,input.input as RaceInput,Date.now());});return json(result);
  }
  await requireAdmin(request);await row(id);
+ if(path.length===2&&path[1]==='decisions'){
+  const data=await body(request);const p=player(data.player);
+  let decision;try{decision=sanitizeDriveDecision(data.decision);}catch{throw new HttpError('Invalid drive decision');}
+  if(decision.decidedAt>Date.now()+60000)throw new HttpError('Invalid drive decision time');
+  const key=`${id}/decisions/${p}.json`;
+  for(let attempt=0;attempt<6;attempt++){
+   const current=await bucket().get(key);
+   if(current&&!isNewerDriveDecision(decision,sanitizeDriveDecision(await current.json())))return json({ok:true,stale:true});
+   const written=await bucket().put(key,JSON.stringify(decision),{httpMetadata:{contentType:'application/json'},onlyIf:current?{etagMatches:current.etag}:{etagDoesNotMatch:'*'}});
+   if(written)return json({ok:true});
+  }
+  throw new HttpError('Drive decision update conflict',409);
+ }
  if(path.length===2&&path[1]==='narration'){
   if(!request.headers.get('content-type')?.startsWith('application/json'))throw new HttpError('JSON required',415);
   if(Number(request.headers.get('content-length'))>128000)throw new HttpError('Feed too large',413);

@@ -41,6 +41,8 @@ test('mocked two-browser run enforces local origin, uploads frames, and deletes 
   const deleted = new Set();
   const approvals = [];
   const uploads = new Set();
+  const decisionResults = new Set();
+  let decisionRequests = 0;
   let finishOnStop = false;
   let rejectDeletes = false;
   let roomCount = 0;
@@ -62,14 +64,26 @@ test('mocked two-browser run enforces local origin, uploads frames, and deletes 
       if (target.pathname.includes('/frame/')) { uploads.add(target.pathname.split('/').at(-1)); return json({ ok: true }); }
       if (target.pathname.endsWith('/telemetry')) return json({ ok: true });
       if (target.pathname.endsWith('/stop')) return json({ state: observedState(true), telemetry: {} });
-      return json({ state: observedState(uploads.size === 2 && !finishOnStop), telemetry: {} });
+      return json({ state: observedState(uploads.size === 2 && decisionResults.size === sessions.size && !finishOnStop), telemetry: {} });
     }
     assert.equal(target.origin, 'https://api.openai.com');
     assert.equal(init.headers.Authorization, 'Bearer fixture-openai');
+    if (target.pathname === '/v1/decisions') {
+      decisionRequests++;
+      const body = JSON.parse(init.body);
+      assert.equal(body.model, 'gpt-6-luna');
+      assert.ok(body.input[0].content.some(item => item.type === 'input_image'));
+      return json({ answers: [
+        { type: 'choice', name: 'action', choice: 'lane_left', confidence: 0.9 },
+        { type: 'predicate', name: 'obstacle_risk', probability: 0.8 },
+        { type: 'predicate', name: 'rival_risk', probability: 0.2 },
+      ] });
+    }
     assert.equal(init.headers['OpenAI-Beta'], 'agents=v1');
     if (target.pathname === '/v1/agents/sessions') {
       const body = JSON.parse(init.body);
       assert.equal(body.agent.tools[0].type, 'computer_use');
+      assert.equal(body.agent.tools[1].name, 'decide_drive');
       assert.equal(body.environment.desktop.enabled, true);
       const id = `sess_fixture_${sessions.size}`;
       sessions.set(id, { initialInput: false, controller: null });
@@ -82,7 +96,9 @@ test('mocked two-browser run enforces local origin, uploads frames, and deletes 
       if (rejectDeletes) return json({ error: { message: 'Fixture cleanup denied' } }, 403);
       deleted.add(id); return new Response(null, { status: 204 });
     }
-    if (!target.pathname.endsWith('/events')) return json({ required_actions: [
+    if (!target.pathname.endsWith('/events')) return json({ required_actions: session.functionPending ? [
+      { type: 'function_call', name: 'decide_drive', arguments: {}, turn_id: `${id}_turn`, call_id: `${id}_decision` },
+    ] : [
       { type: 'computer_use_approval_request', request_id: `${id}_origin`, request: { type: 'browser_origin_access', origin: 'https://game.invalid' } },
       { type: 'computer_use_approval_request', request_id: `${id}_other`, request: { type: 'browser_origin_access', origin: 'https://other.invalid' } },
       { type: 'computer_use_approval_request', request_id: `${id}_auth`, request: { type: 'browser_authentication' } },
@@ -101,7 +117,20 @@ test('mocked two-browser run enforces local origin, uploads frames, and deletes 
     }
     if (event.type === 'agent.session.input.computer_use_approval_request_result') {
       approvals.push(event.response);
-      if (event.response.type === 'browser_authentication') emit({ type: 'agent.session.turn.item.done', event_id: `${id}_image`, item: { id: `${id}_tool`, type: 'computer_use_call', title: 'Fixture screen', output: { type: 'computer_screenshot', image_url: 'data:image/jpeg;base64,YQ==' } } });
+      if (event.response.type === 'browser_authentication') {
+        emit({ type: 'agent.session.turn.item.done', event_id: `${id}_image`, item: { id: `${id}_tool`, type: 'computer_use_call', title: 'Fixture screen', output: { type: 'computer_screenshot', image_url: 'data:image/jpeg;base64,YQ==' } } });
+        session.functionPending = true;
+        emit({ type: 'agent.session.requires_action', event_id: `${id}_function` });
+        // A second event for the same required call must not call Decisions twice.
+        emit({ type: 'agent.session.requires_action', event_id: `${id}_function_repeated` });
+      }
+    }
+    if (event.type === 'agent.session.input.tool_result') {
+      assert.equal(event.turn_id, `${id}_turn`);
+      assert.equal(event.call_id, `${id}_decision`);
+      assert.equal(event.success, true);
+      assert.equal(JSON.parse(event.output).action, 'lane_left');
+      decisionResults.add(id);
     }
     return json({ accepted: true }, 202);
   };
@@ -154,6 +183,9 @@ test('mocked two-browser run enforces local origin, uploads frames, and deletes 
     assert.equal(proof.finalState.players.blue.collisionCount, 2);
     assert.deepEqual(proof.drivingInputs, { red: 1, blue: 1 });
     assert.equal(proof.drivingVerified, true);
+    assert.equal(proof.decisionsVerified, true);
+    assert.equal(decisionRequests, 2);
+    for (const color of ['red', 'blue']) assert.equal(proof.players[color].decisions, 1);
 
     // Reset only clears local display state; it does not create a room or browser.
     assert.equal((await savedFetch(base + '/api/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 403);
