@@ -10,7 +10,7 @@ From the `agent-grand-prix` site folder:
 node operator/server.mjs
 ```
 
-Open <http://127.0.0.1:4180> and click **2つのエージェントを起動**. This starts billable API work. Stop from the dashboard or press Ctrl+C; both paths cancel and delete known browser sessions.
+Open <http://127.0.0.1:4180> to monitor and control the races. While this local server is running, the public viewing page can request a new race automatically when none is active. The dashboard's **2つのエージェントを起動** also starts a race manually. Either path starts billable API work. Stop from the dashboard or press Ctrl+C; both paths cancel and delete known browser sessions.
 
 The server reads `OPENAI_API_KEY` from the project's `.env.local`, and `RACE_ADMIN_KEY` from this site's `.dev.vars`. Existing environment variables take precedence. Secrets are read only into process memory and are never returned to the dashboard. Do not put secret files in source control.
 
@@ -21,8 +21,17 @@ Optional environment settings:
 - `OPENAI_ENV_FILE`, `RACE_ENV_FILE`: optional absolute paths to existing local configuration files instead of `.env.local` / `.dev.vars`. They are read without copying credentials.
 - `NARRATION_ENABLED`: default enabled; set `0` to run without GPT-Live commentary.
 - `NARRATION_VOICE`: default `shida`, the Japanese masculine GPT-Live voice.
+- `AUTO_START_RACES`: default enabled; set `0` to disable public viewing-page requests and use manual starts only.
 
 Deploy the public game and configure its matching `RACE_ADMIN_KEY` before launching. The game and its state API must be reachable from the hosted browsers. A localhost game cannot be reached by OpenAI-hosted sessions.
+
+## Automatic start from the viewing page
+
+The public page writes a coalesced request to the game's launch API. The local operator sends an authenticated heartbeat and polls for that request every two seconds. Only one operator can claim it. Room creation, the two Computer Use sessions, Decisions and narration still run from this local process; no OpenAI key is sent to the public site or browser. Closing the local operator makes automatic start unavailable after the heartbeat expires.
+
+The manual and automatic paths share the same start lock. An existing race is reused, concurrent visitors share one request, and a new run waits for the prior run's session cleanup and proof write. A failed session deletion keeps starts blocked until the operator resets successfully. Stop invalidates the current polling generation and withdraws queued requests before accepting new demand, including when configuration loading or claiming is in flight. Shutdown also sends a final withdrawal; a disconnected operator's heartbeat expires. A failed start is reported to the page; polling does not replay that request or continuously create new races. A later visit or explicit new request is needed to retry.
+
+The server acknowledges the new room as soon as its URLs are validated, so visitors can watch AI preparation immediately. A temporary failure to publish this acknowledgement is retried without recreating the room. The dashboard's `/api/status` includes public-safe `autoStart` connectivity information. Injected test configurations do not poll automatically unless the test explicitly enables `autoStart`.
 
 ## Replay and reset
 
@@ -40,7 +49,7 @@ After completion or cancellation, **新しいレースを開始** creates a new 
 - Stops on game completion, cancellation, stream/API failure, or an eight-minute preparation-and-race limit.
 - Saves a credential-free result record to the project's ignored `work/race-live-check.json`, including the two session IDs, captured image counts, observed game result, and confirmed deletion status. `finalState` retains the public server state, player progress/collisions, and recent control history. `drivingInputs` counts lane/speed/route changes and accepted jumps in that history, separately from READY and browser activity; `computerUseVerified`, `drivingVerified`, and `decisionsVerified` are distinct checks. Per-player `decisions`, `decisionErrors`, and `lastDecision` record Decisions invocations separately from observed game inputs. A returned decision is not itself proof that a click succeeded.
 
-The dashboard is a local operator surface. Only same-origin JSON POST requests can start, stop or place obstacles in a race; Host headers outside localhost are rejected. The public game does not receive the OpenAI API key.
+The dashboard is a local operator surface. Its start, stop and obstacle actions require same-origin JSON POST requests; Host headers outside localhost are rejected. The public launch queue grants no stop, obstacle or arbitrary API forwarding access. The public game does not receive the OpenAI API key.
 
 ## Human obstacle placement
 

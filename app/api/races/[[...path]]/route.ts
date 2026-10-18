@@ -2,6 +2,7 @@ import { env } from 'cloudflare:workers';
 import { advance, applyInput, placeObstacle, cancelRace, createRace, publicView, RaceRuleError, type RaceInput, type RaceState, type PlayerId } from '../../../../lib/race-engine';
 import { isNarrationWav, sanitizeNarrationFeed, validGeneration } from '../../../../lib/narration-feed';
 import { isNewerDriveDecision, sanitizeDriveDecision } from '../../../../lib/drive-decision-feed';
+import { emptyLaunchState, isStalePreparation, LaunchConflict, launchView, operatorLaunch, requestLaunch, type LaunchState, type OperatorLaunchAction } from '../../../../lib/race-launch';
 export const dynamic = 'force-dynamic';
 const json = (data: unknown, status = 200) => Response.json(data, {status, headers:{'Cache-Control':'no-store'}});
 class HttpError extends Error { constructor(message:string, public status=400){super(message);} }
@@ -26,10 +27,65 @@ async function mutate(id:string,fn:(s:RaceState,r:Row)=>Promise<RaceState>|RaceS
  for(let attempt=0;attempt<6;attempt++){const found=await row(id);const next=await fn(JSON.parse(found.state),found);const result=await db().prepare('UPDATE races SET state = ?, version = version + 1 WHERE id = ? AND version = ?').bind(JSON.stringify(next),id,found.version).run();if(result.meta.changes)return view({...found,state:JSON.stringify(next),version:found.version+1});}
  throw new HttpError('Another control arrived at the same time. Please retry.',409);
 }
+async function activeRaceId(now:number){
+ const recent=await db().prepare('SELECT id,state,expires_at FROM races WHERE expires_at > ? ORDER BY created_at DESC LIMIT 20').bind(now).all<Pick<Row,'id'|'state'|'expires_at'>>();
+ for(const candidate of recent.results){
+  const state=advance(JSON.parse(candidate.state) as RaceState,now);
+  if(state.phase!=='finished'&&state.phase!=='cancelled'&&!isStalePreparation(state,now))return candidate.id;
+ }
+ return null;
+}
+const launchTables=new WeakMap<object,Promise<void>>();
+async function launchRow(){
+ const database=db();let ready=launchTables.get(database);
+ if(!ready){ready=(async()=>{
+  await database.prepare('CREATE TABLE IF NOT EXISTS race_launch_coordinator (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL, state TEXT NOT NULL)').run();
+  await database.prepare('INSERT OR IGNORE INTO race_launch_coordinator (id,version,state) VALUES (1,0,?)').bind(JSON.stringify(emptyLaunchState())).run();
+ })();launchTables.set(database,ready);ready.catch(()=>launchTables.delete(database));}
+ await ready;
+ const found=await database.prepare('SELECT version,state FROM race_launch_coordinator WHERE id = 1').first<{version:number;state:string}>();
+ if(!found)throw new HttpError('Launch coordinator unavailable',503);
+ return found;
+}
+async function launch(request:Request,operator:boolean){
+ if(request.method==='GET'){
+  const found=await launchRow();const now=Date.now();return json(launchView(JSON.parse(found.state),now,await activeRaceId(now)));
+ }
+ if(operator)await requireAdmin(request);
+ else{
+  if(request.headers.get('origin')!==new URL(request.url).origin)throw new HttpError('Same-origin request required',403);
+  if(request.headers.get('content-type')?.split(';')[0].trim().toLowerCase()!=='application/json')throw new HttpError('JSON required',415);
+ }
+ const input=await body(request);let action:OperatorLaunchAction|undefined;
+ if(operator){
+  if(typeof input.ownerId!=='string'||!/^[A-Za-z0-9_-]{16,128}$/.test(input.ownerId)||!['heartbeat','claim','complete','fail'].includes(input.action))throw new HttpError('Invalid operator launch action');
+  if(input.accepting!==undefined&&typeof input.accepting!=='boolean')throw new HttpError('Invalid operator availability');
+  if(input.requestId!==undefined&&(typeof input.requestId!=='string'||!/^launch_[a-f0-9]{32}$/.test(input.requestId)))throw new HttpError('Invalid launch request');
+  if(input.raceId!==undefined&&(typeof input.raceId!=='string'||!/^race_[a-f0-9]{32}$/.test(input.raceId)))throw new HttpError('Invalid race ID');
+  action=input as OperatorLaunchAction;
+  if(action.action==='complete'){if(!action.raceId)throw new HttpError('Race ID is required');await row(action.raceId);}
+ }else if(input.previousRaceId!==undefined&&(typeof input.previousRaceId!=='string'||!/^race_[a-f0-9]{32}$/.test(input.previousRaceId)))throw new HttpError('Invalid previous race ID');
+ const requestId='launch_'+crypto.randomUUID().replaceAll('-','');
+ for(let attempt=0;attempt<8;attempt++){
+  const found=await launchRow();const now=Date.now();const active=await activeRaceId(now);const current=JSON.parse(found.state) as LaunchState;
+  const transition=action?operatorLaunch(current,action,now,active):{state:requestLaunch(current,now,active,requestId),claimedRequestId:null};
+  const serialized=JSON.stringify(transition.state);
+  if(serialized!==found.state){
+   const result=await db().prepare('UPDATE race_launch_coordinator SET state = ?, version = version + 1 WHERE id = 1 AND version = ?').bind(serialized,found.version).run();
+   if(!result.meta.changes)continue;
+  }
+  return json({...launchView(transition.state,now,active),...(operator?{claimedRequestId:transition.claimedRequestId}:{})});
+ }
+ throw new HttpError('Launch coordinator busy. Please retry.',409);
+}
 async function handle(request:Request,context:{params:Promise<{path?:string[]}>}){
  const {path=[]}=await context.params;
+ if(path[0]==='launch'&&(path.length===1||(path.length===2&&path[1]==='operator'))){
+  if(path.length===2&&request.method!=='POST')throw new HttpError('Not found',404);
+  return launch(request,path.length===2);
+ }
  if(request.method==='GET'){
-  if(path.length===1&&path[0]==='latest'){const latest=await db().prepare('SELECT id FROM races ORDER BY created_at DESC LIMIT 1').first<{id:string}>();return json({id:latest?.id||null});}
+  if(path.length===1&&path[0]==='latest')return json({id:await activeRaceId(Date.now())});
   const id=validId(path[0]||'');const found=await row(id);
   if(path.length===1)return json(await view(found));
   if(path.length===2&&path[1]==='decisions'){
@@ -126,6 +182,6 @@ async function handle(request:Request,context:{params:Promise<{path?:string[]}>}
  }
  throw new HttpError('Not found',404);
 }
-async function route(request:Request,context:{params:Promise<{path?:string[]}>}){try{return await handle(request,context);}catch(error){return json({error:error instanceof Error?error.message:'Request failed'},error instanceof HttpError?error.status:error instanceof RaceRuleError?409:500);}}
+async function route(request:Request,context:{params:Promise<{path?:string[]}>}){try{return await handle(request,context);}catch(error){return json({error:error instanceof Error?error.message:'Request failed'},error instanceof HttpError?error.status:error instanceof RaceRuleError||error instanceof LaunchConflict?409:500);}}
 export const GET=route;
 export const POST=route;

@@ -1,0 +1,13 @@
+.race-arrival { width: 100%; max-width: 580px; padding: 24px; border: 1px solid #d9ed982b; border-radius: 12px; background: linear-gradient(125deg, #d9ed980d, #111b2100); text-align: left; }
+.arrival-label { display: flex; align-items: center; gap: 9px; color: #d9ed98; font: 10px/1.4 monospace; letter-spacing: .1em; }
+.arrival-heading { display: flex; align-items: center; gap: 12px; margin-top: 16px; color: #d9ed98; }
+.arrival-heading h2 { margin: 0; color: #f0f3e8; font-size: clamp(18px, 2vw, 23px); line-height: 1.5; letter-spacing: -.03em; }
+.race-arrival p { margin: 10px 0 18px; color: #a4b0b8; font-size: 13px; line-height: 1.8; }
+.arrival-note { display: block; margin-top: 16px; color: #81909a; font-size: 10px; line-height: 1.7; }
+.arrival-runway { position: relative; height: 30px; border-top: 1px dashed #78908a66; border-bottom: 1px dashed #78908a66; overflow: hidden; background: #080f1455; }
+.arrival-runway i { position: absolute; top: 5px; left: -20px; width: 18px; height: 6px; border-radius: 3px; background: #ff5d58; box-shadow: -12px 0 12px #ff5d5855; animation: arrival-drive 3s ease-in-out infinite; }
+.arrival-runway i + i { top: 18px; background: #68a4ff; box-shadow: -12px 0 12px #68a4ff55; animation-delay: .35s; }
+.arrival-screen { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 65vh; padding: 24px; }
+.home-hero > .race-arrival { margin-top: 28px; }
+@keyframes arrival-drive { to { left: 110%; } }
+@media (prefers-reduced-motion: reduce) { .arrival-runway i { animation: none; left: 55%; } .arrival-runway i + i { left: 42%; } }

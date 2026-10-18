@@ -433,7 +433,7 @@ async function persistProof(run) {
   await writeFile(run.proofFile, JSON.stringify(proof, null, 2) + '\n', { mode: 0o600 });
 }
 
-async function executeRun(run, saveProof = persistProof) {
+async function executeRun(run, saveProof = persistProof, onRoomReady = async () => {}) {
   let outcome = 'failed';
   try {
     log(run, '公開ゲームに対戦ルームを作成しています。');
@@ -450,6 +450,7 @@ async function executeRun(run, saveProof = persistProof) {
     const spectator = new URL(room.spectatorUrl);
     if (spectator.origin !== run.config.origin || spectator.hash) throw new Error('観戦URLの形式が不正です。');
     run.spectatorUrl = spectator.href;
+    await onRoomReady(run);
     if (run.stopRequested) { outcome = 'cancelled'; return; }
     try { startNarration(run); } catch (error) { log(run, `実況の開始: ${error.message}`); }
     log(run, '独立した2つのComputer Useセッションを作成しています。');
@@ -541,7 +542,8 @@ async function readBody(request) {
   try { return JSON.parse(raw || '{}'); } catch { throw new RemoteError('JSON が不正です。', 400); }
 }
 
-export async function createOperatorServer({ port = Number(process.env.OPERATOR_PORT || 4180), proofFile = PROOF_FILE, loadConfig = loadConfiguration, saveProof = persistProof, narratorFactory = createLiveNarrator } = {}) {
+export async function createOperatorServer({ port = Number(process.env.OPERATOR_PORT || 4180), proofFile = PROOF_FILE, loadConfig = loadConfiguration, saveProof = persistProof, narratorFactory = createLiveNarrator,
+  autoStart = loadConfig === loadConfiguration && process.env.AUTO_START_RACES !== '0', launchPollMs = 2000 } = {}) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('OPERATOR_PORT が不正です。');
   let current = null;
   let task = null;
@@ -549,14 +551,122 @@ export async function createOperatorServer({ port = Number(process.env.OPERATOR_
   let resetTask = null;
   let placing = false;
   let closing = false;
+  let startGeneration = 0;
+  const launchOwnerId = randomUUID();
+  let launchTimer = null;
+  let launchPollTask = null;
+  let launchClaim = null;
+  let launchConfig = null;
+  let launchWithdrawalPending = false;
+  let launchState = autoStart ? 'connecting' : 'disabled';
+  let launchLastConnectedAt = null;
+  let launchLastError = null;
   const unclearedPlayers = run => run ? COLORS.filter(color => run.players[color].sessionId && !run.players[color].cleanupDeleted) : [];
   const status = () => {
     const terminal = !current || TERMINAL_STAGES.has(current.stage);
     const available = !closing && !starting && !resetTask;
     const cleanupPending = terminal && unclearedPlayers(current).length > 0;
-    return { ...publicRun(current), canStart: available && !task && terminal && !cleanupPending,
+    return { ...publicRun(current), autoStart: { enabled: autoStart, status: launchState, lastConnectedAt: launchLastConnectedAt, error: launchLastError }, canStart: available && !task && terminal && !cleanupPending,
       canReset: available && Boolean(current) && terminal, cleanupPending,
       canPlaceObstacle: available && !placing && current?.stage === 'running' && current?.gamePhase === 'racing' && !current.stopRequested && !current.stopping };
+  };
+  const launchRequest = async (config, action, fields = {}) => {
+    // Only this fixed, authenticated API destination can enqueue paid local work.
+    const context = { config, secrets: new Set([config.key, config.admin]) };
+    const response = await game(context, '/api/races/launch/operator', {
+      method: 'POST', body: JSON.stringify({ ownerId: launchOwnerId, action, ...fields }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const result = await response.json();
+    launchLastConnectedAt = Date.now();
+    launchLastError = null;
+    launchState = 'online';
+    return result;
+  };
+  const finishLaunchClaim = async () => {
+    const claim = launchClaim;
+    if (!claim || (!claim.raceId && !claim.failed)) return;
+    try {
+      await launchRequest(claim.config, claim.failed ? 'fail' : 'complete', {
+        requestId: claim.requestId, ...(claim.raceId ? { raceId: claim.raceId } : {}),
+      });
+      if (launchClaim === claim) launchClaim = null;
+    } catch (error) {
+      // An expired claim must not be replayed. The created race is discoverable independently.
+      if (error.status === 409) { if (launchClaim === claim) launchClaim = null; }
+      else throw error;
+    }
+  };
+  const withdrawLaunch = async config => {
+    const generation = startGeneration;
+    await launchRequest(config, 'heartbeat', { accepting: false });
+    if (generation === startGeneration) launchWithdrawalPending = false;
+  };
+  const startRun = async (body = {}, { config, claim } = {}) => {
+    if (!status().canStart) throw new RemoteError(status().cleanupPending ? '残っているブラウザーをリセットで終了してから再実行してください。' : '実行中のレースや終了処理が完了してから再実行してください。', 409);
+    starting = true;
+    const generation = startGeneration;
+    try {
+      config ||= await loadConfig();
+      if (claim) {
+        const result = await launchRequest(config, 'claim');
+        if (!result.claimedRequestId) return false;
+        if (typeof result.claimedRequestId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(result.claimedRequestId)) throw new Error('自動開始リクエストの形式が不正です。');
+        launchClaim = { config, requestId: result.claimedRequestId, raceId: null, failed: false };
+      }
+      if (closing || generation !== startGeneration) throw new RemoteError('レースの開始を取り消しました。', 409);
+      const seed = Number.isSafeInteger(body.seed) ? body.seed : Math.floor(Math.random() * 0x7fffffff);
+      const run = makeRun(config, seed, proofFile);
+      const runClaim = claim ? launchClaim : null;
+      current = run;
+      run.narratorFactory = narratorFactory;
+      task = executeRun(run, saveProof, async room => {
+        if (!runClaim) return;
+        runClaim.raceId = room.raceId;
+        try { await finishLaunchClaim(); }
+        catch (error) { log(run, `自動開始の通知を再試行します: ${error.message}`); }
+      }).finally(async () => {
+        if (runClaim && !runClaim.raceId && launchClaim === runClaim) {
+          runClaim.failed = true;
+          try { await finishLaunchClaim(); } catch { /* The polling loop retries the acknowledgement, never the run. */ }
+        }
+        task = null;
+      });
+      return true;
+    } catch (error) {
+      if (claim && launchClaim && !launchClaim.raceId) {
+        launchClaim.failed = true;
+        try { await finishLaunchClaim(); } catch { /* Retry acknowledgement on the next poll. */ }
+      }
+      throw error;
+    } finally { starting = false; }
+  };
+  const pollLaunch = async () => {
+    if (closing) return;
+    const generation = startGeneration;
+    try {
+      const config = await loadConfig();
+      launchConfig = config;
+      if (launchWithdrawalPending) { await withdrawLaunch(config); return; }
+      if (closing || generation !== startGeneration) return;
+      const state = status();
+      await launchRequest(config, 'heartbeat', { accepting: !starting && !resetTask && !state.cleanupPending && current?.stage !== 'stopping' });
+      if (launchWithdrawalPending) { await withdrawLaunch(config); return; }
+      if (closing || generation !== startGeneration) return;
+      await finishLaunchClaim();
+      if (!closing && generation === startGeneration && !launchWithdrawalPending && !launchClaim && status().canStart) await startRun({}, { config, claim: true });
+    } catch {
+      // Keep errors public-safe even when configuration or a proxy contains private values.
+      launchState = 'offline';
+      launchLastError = '自動開始サービスに接続できません。設定と公開サイトを確認してください。';
+    }
+  };
+  const scheduleLaunchPoll = () => {
+    if (!autoStart || closing) return;
+    launchTimer = setTimeout(() => {
+      launchPollTask = pollLaunch().finally(() => { launchPollTask = null; scheduleLaunchPoll(); });
+    }, launchPollMs);
+    launchTimer.unref();
   };
   const page = await readFile(resolve(HERE, 'index.html'));
   const obstacleCatalog = await loadObstacleCatalog(resolve(SITE_ROOT, 'public/roadster-circuit/props'));
@@ -600,17 +710,8 @@ export async function createOperatorServer({ port = Number(process.env.OPERATOR_
         return send(status(), 201);
       }
       if (path === '/api/start') {
-        if (!status().canStart) return send({ error: status().cleanupPending ? '残っているブラウザーをリセットで終了してから再実行してください。' : '実行中のレースや終了処理が完了してから再実行してください。' }, 409);
-        starting = true;
-        try {
-          const config = await loadConfig();
-          if (closing) throw new RemoteError('オペレーターを終了しています。', 409);
-          const seed = Number.isSafeInteger(body.seed) ? body.seed : Math.floor(Math.random() * 0x7fffffff);
-          current = makeRun(config, seed, proofFile);
-          current.narratorFactory = narratorFactory;
-          task = executeRun(current, saveProof).finally(() => { task = null; });
-          send(status(), 202);
-        } finally { starting = false; }
+        await startRun(body);
+        send(status(), 202);
         return;
       }
       if (path === '/api/reset') {
@@ -636,17 +737,28 @@ export async function createOperatorServer({ port = Number(process.env.OPERATOR_
         return send(status());
       }
       if (path === '/api/stop') {
+        startGeneration++;
+        if (autoStart) launchWithdrawalPending = true;
         if (current && !TERMINAL_STAGES.has(current.stage)) { current.stopRequested = true; current.message = '停止を要求しました。ブラウザーを終了しています。'; }
         return send(status(), 202);
       }
       return send({ error: '見つかりません。' }, 404);
     } catch (error) { send({ error: current ? safeText(current, error.message) : '設定またはリクエストを確認してください。' }, error.status || 500); }
   });
+  server.once('listening', scheduleLaunchPoll);
   const stop = async () => {
     closing = true;
+    startGeneration++;
+    if (autoStart) launchWithdrawalPending = true;
+    clearTimeout(launchTimer);
     if (current) current.stopRequested = true;
+    await launchPollTask;
     await task;
     try { await resetTask; } catch { /* A failed retry must not prevent the server from closing. */ }
+    if (autoStart) {
+      try { await withdrawLaunch(launchConfig || await loadConfig()); }
+      catch { /* If disconnected, the server-side heartbeat expires without replaying a claim. */ }
+    }
     await new Promise(resolve => server.close(resolve));
   };
   return { server, stop, status };

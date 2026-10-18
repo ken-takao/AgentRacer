@@ -453,3 +453,184 @@ test('start and reset stay locked while configuration and the previous proof are
     globalThis.fetch = savedFetch;
   }
 });
+
+test('public launch polling coalesces demand, honors stop/start locks, and waits for final cleanup', async () => {
+  const savedFetch = globalThis.fetch;
+  const config = { key: 'fixture-openai', admin: 'fixture-admin', origin: 'https://game.invalid' };
+  const requests = [];
+  let pending = null, claimGate = null, releaseClaim = () => {}, releaseProof = () => {};
+  let proofGate = null, failCreate = false, rejectDeletes = false, completionFailures = 0;
+  let rooms = 0, sessions = 0, phase = 'racing';
+  const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if (target.hostname === '127.0.0.1') return savedFetch(url, init);
+    if (target.origin === config.origin) {
+      assert.equal(init.headers.Authorization, 'Bearer fixture-admin');
+      if (target.pathname === '/api/races/launch/operator') {
+        const body = JSON.parse(init.body);
+        assert.match(body.ownerId, /^[A-Za-z0-9_-]{16,128}$/);
+        requests.push(body);
+        if (body.action === 'heartbeat' && body.accepting === false) pending = null;
+        if (body.action === 'claim') {
+          const claimedRequestId = pending;
+          pending = null;
+          await claimGate;
+          return json({ status: 'waiting', claimedRequestId });
+        }
+        if (body.action === 'complete' && completionFailures-- > 0) return json({ error: 'Acknowledgement temporarily unavailable' }, 503);
+        return json({ status: 'waiting' });
+      }
+      if (target.pathname === '/api/races') {
+        if (failCreate) return json({ error: 'Room unavailable' }, 503);
+        const id = `race_auto_${++rooms}`;
+        return json({ id, spectatorUrl: `https://game.invalid/race/${id}`, playerUrls: {
+          red: `https://game.invalid/play/${id}/red#red-secret`, blue: `https://game.invalid/play/${id}/blue#blue-secret`,
+        } });
+      }
+      if (target.pathname.endsWith('/telemetry')) return json({ ok: true });
+      if (target.pathname.endsWith('/stop')) return json({ state: { phase: 'cancelled', history: [] } });
+      return json({ state: { phase, winner: phase === 'finished' ? 'red' : null, history: [] } });
+    }
+    assert.equal(target.origin, 'https://api.openai.com');
+    assert.equal(init.headers.Authorization, 'Bearer fixture-openai');
+    if (target.pathname === '/v1/agents/sessions') {
+      assert.ok(requests.some(item => item.action === 'complete' && item.raceId === `race_auto_${rooms}`), 'announce the room before starting paid sessions');
+      return json({ id: `sess_auto_${++sessions}` });
+    }
+    if (init.method === 'DELETE') return rejectDeletes ? json({ error: 'Cleanup denied' }, 403) : new Response(null, { status: 204 });
+    if (!init.method && target.pathname.endsWith('/events')) return new Response(new ReadableStream({ start(controller) {
+      init.signal.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')), { once: true });
+    } }), { headers: { 'Content-Type': 'text/event-stream' } });
+    return json({ accepted: true, required_actions: [] });
+  };
+  const port = 4197;
+  const operator = await createOperatorServer({ port, loadConfig: async () => config, saveProof: async () => proofGate, autoStart: true, launchPollMs: 10 });
+  await new Promise(resolve => operator.server.listen(port, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${port}`;
+  const post = path => savedFetch(base + path, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: '{}' });
+  const waitFor = async predicate => {
+    for (let i = 0; i < 300; i++) {
+      if (predicate()) return;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.fail(`Operator launch state did not settle: ${JSON.stringify(operator.status())}`);
+  };
+  try {
+    await waitFor(() => requests.some(item => item.action === 'heartbeat'));
+    assert.equal(rooms, 0, 'polling alone must not launch a race');
+    claimGate = new Promise(resolve => { releaseClaim = resolve; });
+    pending = 'request_cancelled';
+    const claimsBefore = requests.filter(item => item.action === 'claim').length;
+    await waitFor(() => requests.filter(item => item.action === 'claim').length > claimsBefore);
+    assert.equal((await post('/api/start')).status, 409, 'manual and public starts share one lock');
+    assert.equal((await post('/api/reset')).status, 409);
+    assert.equal((await post('/api/stop')).status, 202);
+    releaseClaim(); claimGate = null;
+    await waitFor(() => requests.some(item => item.action === 'fail' && item.requestId === 'request_cancelled'));
+    await waitFor(() => requests.some(item => item.action === 'heartbeat' && item.accepting === false));
+    assert.equal(rooms, 0, 'stop during an in-flight claim must prevent room and session creation');
+
+    completionFailures = 1; pending = 'request_first';
+    await waitFor(() => operator.status().stage === 'running');
+    await waitFor(() => requests.filter(item => item.action === 'complete' && item.requestId === 'request_first').length === 2);
+    assert.equal(rooms, 1);
+    assert.equal(sessions, 2);
+    assert.equal(operator.status().autoStart.enabled, true);
+    assert.equal(operator.status().autoStart.status, 'online');
+    assert.doesNotMatch(JSON.stringify(operator.status()), /fixture-openai|fixture-admin|red-secret|blue-secret|ownerId/);
+    const claimsWhileRunning = requests.filter(item => item.action === 'claim').length;
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(requests.filter(item => item.action === 'claim').length, claimsWhileRunning, 'active races only send heartbeats');
+    assert.equal((await post('/api/start')).status, 409);
+
+    proofGate = new Promise(resolve => { releaseProof = resolve; });
+    phase = 'finished';
+    await waitFor(() => operator.status().stage === 'completed');
+    pending = 'request_second';
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(rooms, 1, 'a terminal snapshot cannot bypass the pending cleanup/proof task');
+    assert.equal(operator.status().canStart, false);
+    phase = 'racing'; releaseProof(); proofGate = null;
+    await waitFor(() => rooms === 2 && operator.status().stage === 'running');
+    assert.equal(sessions, 4);
+    await post('/api/stop');
+    await waitFor(() => operator.status().canStart);
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.equal(rooms, 2, 'stopping does not re-enqueue or replay a consumed request');
+
+    failCreate = true; pending = 'request_failed';
+    await waitFor(() => requests.some(item => item.action === 'fail' && item.requestId === 'request_failed'));
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(rooms, 2);
+    assert.equal(sessions, 4, 'a failed creation is reported once and never silently restarted');
+
+    failCreate = false; rejectDeletes = true; phase = 'finished'; pending = 'request_cleanup';
+    await waitFor(() => operator.status().cleanupPending);
+    pending = 'request_blocked';
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(rooms, 3);
+    assert.equal(operator.status().canStart, false);
+    assert.equal(requests.at(-1).action, 'heartbeat');
+    assert.equal(requests.at(-1).accepting, false, 'cleanup failure withdraws availability');
+    pending = null; rejectDeletes = false;
+    assert.equal((await post('/api/reset')).status, 200);
+    assert.equal(operator.status().cleanupPending, false);
+    assert.equal(new Set(requests.map(item => item.ownerId)).size, 1);
+  } finally {
+    releaseClaim(); releaseProof(); pending = null; rejectDeletes = false;
+    await operator.stop();
+    const count = requests.length;
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(requests.length, count, 'shutdown stops its polling loop');
+    globalThis.fetch = savedFetch;
+  }
+});
+
+test('stop withdraws queued demand while configuration is loading and before the next poll', async () => {
+  const savedFetch = globalThis.fetch;
+  const config = { key: 'fixture-openai', admin: 'fixture-admin', origin: 'https://game.invalid' };
+  const requests = [];
+  let pending = 'request_before_config', claimed = 0, releaseConfig, configEntered;
+  const configurationStarted = new Promise(resolve => { configEntered = resolve; });
+  const configurationGate = new Promise(resolve => { releaseConfig = resolve; });
+  globalThis.fetch = async (url, init = {}) => {
+    if (new URL(url).hostname === '127.0.0.1') return savedFetch(url, init);
+    assert.equal(String(url), 'https://game.invalid/api/races/launch/operator', 'a stopped demand must never create a room or a paid session');
+    const body = JSON.parse(init.body);
+    requests.push(body);
+    if (body.action === 'heartbeat' && body.accepting === false) pending = null;
+    const claimedRequestId = body.action === 'claim' ? pending : null;
+    if (claimedRequestId) { claimed++; pending = null; }
+    return new Response(JSON.stringify({ status: 'waiting', claimedRequestId }), { headers: { 'Content-Type': 'application/json' } });
+  };
+  const port = 4196;
+  const operator = await createOperatorServer({ port, loadConfig: async () => { configEntered(); await configurationGate; return config; }, autoStart: true, launchPollMs: 20 });
+  await new Promise(resolve => operator.server.listen(port, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${port}`;
+  const stop = () => savedFetch(base + '/api/stop', { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: '{}' });
+  try {
+    await configurationStarted;
+    assert.equal((await stop()).status, 202);
+    releaseConfig();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(requests[0].action, 'heartbeat');
+    assert.equal(requests[0].accepting, false, 'withdraw must precede any accepting heartbeat after the deferred configuration resolves');
+    assert.equal(claimed, 0);
+    assert.equal(operator.status().stage, 'idle');
+
+    // Stop must also invalidate demand already queued before any new poll begins.
+    const withdrawalsBefore = requests.filter(item => item.accepting === false).length;
+    pending = 'request_between_polls';
+    await stop();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(claimed, 0);
+    assert.ok(requests.filter(item => item.accepting === false).length > withdrawalsBefore);
+  } finally {
+    releaseConfig();
+    await operator.stop();
+    assert.equal(requests.at(-1).action, 'heartbeat');
+    assert.equal(requests.at(-1).accepting, false, 'shutdown withdraws remote pending demand');
+    globalThis.fetch = savedFetch;
+  }
+});

@@ -7,7 +7,7 @@
 <div class="eyebrow">LOCAL OPERATOR · 2 INDEPENDENT BROWSERS</div><h1>Agent Grand Prix</h1>
 <p>Decisions APIが進路を選び、2つのComputer Useエージェントが画面を操作します。<br>この画面から起動し、公開の観戦ページでレースと取得画面を見られます。</p>
 <div class="actions"><button id="start" class="primary">2つのエージェントを起動</button><button id="stop" class="secondary" disabled>レースを停止</button><button id="reset" class="secondary" disabled>表示をリセット</button><a id="spectator" class="button hidden" target="_blank" rel="noopener noreferrer">観戦ページを開く ↗</a></div>
-<p id="restart-help" class="note">開始すると新しい観戦タブを開きます。2つのセッションは毎回新しく作成します。</p><section class="status"><div class="status-head"><strong id="message">状態を取得しています。</strong><span id="stage" class="pill">IDLE</span></div><p id="phase">GAME —</p><p id="narration" class="note">AI実況 · レース開始時に接続</p><div id="error" class="error"></div></section>
+<p id="restart-help" class="note">開始すると新しい観戦タブを開きます。2つのセッションは毎回新しく作成します。</p><section class="status"><div class="status-head"><strong id="message">状態を取得しています。</strong><span id="stage" class="pill">IDLE</span></div><p id="phase">GAME —</p><p id="auto-start" class="note" role="status">公開ページからの自動開始 · 接続を確認中</p><p id="narration" class="note">AI実況 · レース開始時に接続</p><div id="error" class="error"></div></section>
 <section class="cards"><article class="card red"><h2>RED DRIVER</h2><div class="metrics"><div><strong id="red-actions">0</strong><span>ブラウザー操作</span></div><div><strong id="red-images">0</strong><span>取得画面</span></div></div><p id="red-decision" class="note">Decisions API · 判断待ち</p><p id="red-status">待機中</p><div id="red-session" class="session">—</div><p id="red-cleanup" class="note"></p></article><article class="card blue"><h2>BLUE DRIVER</h2><div class="metrics"><div><strong id="blue-actions">0</strong><span>ブラウザー操作</span></div><div><strong id="blue-images">0</strong><span>取得画面</span></div></div><p id="blue-decision" class="note">Decisions API · 判断待ち</p><p id="blue-status">待機中</p><div id="blue-session" class="session">—</div><p id="blue-cleanup" class="note"></p></article></section>
 <section class="placement" aria-labelledby="placement-title">
   <div class="placement-head"><div><div class="eyebrow">HUMAN VS AGENTS</div><h2 id="placement-title">コースに障害物を設置</h2><p class="note">走るAIに、人間からのチャレンジ。</p></div><span class="pill" id="placement-count">0 / 20</span></div>
@@ -43,6 +43,9 @@ function draw(state) {
   placementReceivedAt = Date.now();
   drawPlacement();
   $('message').textContent = state.message;
+  const autoStart = state.autoStart || {};
+  const autoStartLabels = {online:'接続済み',connecting:'接続を確認中',offline:'接続できません。公開サイトと設定を確認してください',disabled:'無効（手動で開始）'};
+  $('auto-start').textContent = '公開ページからの自動開始 · ' + (autoStartLabels[autoStart.status] || '対応するオペレーターの更新が必要です');
   const narration = state.narration || {};
   const narrationLabels = {standby:'接続待ち',connecting:'接続中',live:'音声・字幕を配信中',ended:'配信終了',error:'接続エラー（レースは続行）',disabled:'無効'};
   $('narration').textContent = 'AI実況 · GPT-Live · ' + (narrationLabels[narration.status] || '待機中');

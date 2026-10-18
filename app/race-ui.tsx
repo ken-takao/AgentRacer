@@ -11,6 +11,8 @@ import { CourseMap, RivalRadar, RouteControls, TacticalRoad } from "./race-tacti
 import { createCourseFeatures, COURSE_NAMES } from "../lib/race-course";
 import type { CourseFeatures, RouteChoice } from "../lib/race-course";
 import { RacePreparation } from "./race-preparation";
+import { RaceArrival } from "./race-arrival";
+import { isStalePreparation } from "../lib/race-launch";
 import { RaceAudio } from "./race-audio";
 import { NarrationBubble, RaceNarration } from "./race-narration";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleDot, Flag, Gauge, Maximize2, Monitor, Radio, Trophy, Zap } from "lucide-react";
@@ -194,28 +196,7 @@ function previewRace(progress: number): Race & { now: number } {
 }
 
 export function HomeScreen() {
-  const [latest, setLatest] = useState<string | null>(null);
-  const [checked, setChecked] = useState(false);
-  const [latestError, setLatestError] = useState(false);
-  useEffect(() => {
-    const ac = new AbortController();
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
-    async function pollLatest() {
-      let failed = false;
-      try {
-        const result = await requestRaceJson<{ id?: string }>("/api/races/latest", { signal: ac.signal });
-        if (!disposed) {
-          setLatest(result.id || null);
-          setLatestError(false);
-        }
-      } catch { if (!disposed) setLatestError(true); failed = true; }
-      if (!disposed) { setChecked(true); timer = setTimeout(pollLatest, failed ? 15000 : 3000); }
-    }
-    void pollLatest();
-    return () => { disposed = true; ac.abort(); clearTimeout(timer); };
-  }, []);
-  return <><SiteHeader /><main className="home-main"><section className="home-hero"><div className="eyebrow"><span className="tiny-line" />THE COMPUTER USE RACING EXPERIMENT</div><h1>Two agents.<br /><span>One finish line.</span></h1><p className="home-description">画面を見る。ハンドルを切る。勝利を狙う。<br />2つのAIエージェントが、リアルタイムで競うレース。</p><div className="hero-actions">{latest ? <a className="button button-lime" href={`/race/${enc(latest)}`}><Radio size={18} />レースを観戦する<ArrowUpRight size={19} /></a> : <span className="button button-muted">{!checked ? "レースを確認中…" : latestError ? "レース情報を取得できません" : "開催中のレースはありません"}</span>}<a className="button button-lime" href="/preview/roadster">3Dプレビュー<ArrowUpRight size={17} /></a><a className="subtle-link" href="/preview/narration">AI実況を試聴<ArrowUpRight size={15} /></a><a className="subtle-link" href="http://127.0.0.1:4180/">オペレーター画面<ArrowUpRight size={15} /></a></div><div className="hero-facts"><span><b>02</b> INDEPENDENT AGENTS</span><span><b>03</b> LANES</span><span><b>∞</b> POSSIBILITIES</span></div></section><section className="home-track"><div className="track-topline"><span><CircleDot size={13} />TOKYO CIRCUIT</span><span>REAL-TIME SIMULATION</span></div><SpectatorCircuit race={previewRace(30)} decorative /><div className="home-versus"><span className="red-text">01 / SCARLET</span><span>VS</span><span className="blue-text">02 / COBALT</span></div></section><section className="how-it-works"><div><span className="step">01 / SEE</span><h2>それぞれの視点で</h2><p>独立したクラウドブラウザーで、相手車両・コース・障害物を観察。</p></div><div><span className="step">02 / DECIDE</span><h2>操作を決める</h2><p>Decisions APIが画面から進路・レーン・速度を選び、Computer Useが操作。</p></div><div><span className="step">03 / RACE</span><h2>時間は止まらない</h2><p>判断している間もレースは進行。先にゴールしたAIの勝利。</p></div></section><p className="operator-note">対戦の開始は、主催者のローカルオペレーター画面から。観戦はこのサイトで楽しめます。</p></main><Footer /></>;
+  return <><SiteHeader /><main className="home-main"><section className="home-hero"><div className="eyebrow"><span className="tiny-line" />THE COMPUTER USE RACING EXPERIMENT</div><h1>Two agents.<br /><span>One finish line.</span></h1><p className="home-description">画面を見る。ハンドルを切る。勝利を狙う。<br />2つのAIエージェントが、リアルタイムで競うレース。</p><RaceArrival /><div className="hero-actions"><a className="button button-lime" href="/preview/roadster">3Dプレビュー<ArrowUpRight size={17} /></a><a className="subtle-link" href="/preview/narration">AI実況を試聴<ArrowUpRight size={15} /></a><a className="subtle-link" href="http://127.0.0.1:4180/">オペレーター画面<ArrowUpRight size={15} /></a></div><div className="hero-facts"><span><b>02</b> INDEPENDENT AGENTS</span><span><b>03</b> LANES</span><span><b>∞</b> POSSIBILITIES</span></div></section><section className="home-track"><div className="track-topline"><span><CircleDot size={13} />TOKYO CIRCUIT</span><span>REAL-TIME SIMULATION</span></div><SpectatorCircuit race={previewRace(30)} decorative /><div className="home-versus"><span className="red-text">01 / SCARLET</span><span>VS</span><span className="blue-text">02 / COBALT</span></div></section><section className="how-it-works"><div><span className="step">01 / SEE</span><h2>それぞれの視点で</h2><p>独立したクラウドブラウザーで、相手車両・コース・障害物を観察。</p></div><div><span className="step">02 / DECIDE</span><h2>操作を決める</h2><p>Decisions APIが画面から進路・レーン・速度を選び、Computer Useが操作。</p></div><div><span className="step">03 / RACE</span><h2>時間は止まらない</h2><p>判断している間もレースは進行。先にゴールしたAIの勝利。</p></div></section><p className="operator-note">このページを開くと、開催中のレースへ自動で合流します。開催前なら、主催者のオペレーターが新しい対戦を準備します。</p></main><Footer /></>;
 }
 export function RoadsterPreviewScreen() {
   const [initial] = useState(() => previewRace(0));
@@ -381,8 +362,8 @@ function NextRacePanel({ id, compact = false }: { id: string; compact?: boolean 
     {!compact && <div><span className="eyebrow">READY FOR ANOTHER RACE?</span><h2>もう一度、スタートラインへ。</h2><p>この試合は終了しました。新しいレースは2つの新しいセッションで始まります。</p></div>}
     <div className="next-race-actions">
       {nextId && <a className="button button-lime" href={`/race/${enc(nextId)}`}><Radio size={17} />次のレースを観戦する<ArrowUpRight size={17} /></a>}
-      <a className={nextId ? "button button-muted" : "button button-lime"} href="http://127.0.0.1:4180/" target="agent-grand-prix-operator" rel="noopener noreferrer" title="主催者のMacで操作画面を開きます。終了した試合の結果は残ります。">もう一度レースする<ArrowUpRight size={17} /></a>
-      {!compact && <small>主催者のMacで操作画面が開きます。終了した試合の結果は残ります。</small>}
+      <a className={nextId ? "button button-muted" : "button button-lime"} href="/" title="新しいレースを準備します。開催中のレースがあれば合流します。">もう一度レースする<ArrowUpRight size={17} /></a>
+      {!compact && <small>新しい対戦を準備して、自動で観戦画面へ移動します。</small>}
     </div>
   </section>;
 }
@@ -398,11 +379,23 @@ function CountdownOverlay({ race, receivedAt }: { race: Race; receivedAt: number
   return <div className="countdown-overlay" role="status"><span>GET READY</span><strong>{countdown || "GO"}</strong></div>;
 }
 export function SpectatorScreen({ id }: { id: string }) {
+  const [entry, setEntry] = useState<'checking' | 'watching' | 'launch'>('checking');
   const [narratorSpeaking, setNarratorSpeaking] = useState(false);
   const { data, error, receivedAt, retry, sampleRace } = useRace(id);
   const race = data?.state;
   const ended = race?.phase === "finished" || race?.phase === "cancelled";
   const decisions = useDriveDecisions(id, ended);
+  useEffect(() => {
+    setEntry('checking');
+  }, [id]);
+  useEffect(() => {
+    // Only an ended race on arrival redirects. A race watched through its finish
+    // retains its result, and does not create an endless chain of paid sessions.
+    if (race && entry === 'checking') setEntry(ended || isStalePreparation(race, race.updatedAt) ? 'launch' : 'watching');
+  }, [race, ended, entry]);
+  if (entry === 'launch') return <div className="spectator-shell"><SiteHeader /><main className="arrival-screen"><RaceArrival previousRaceId={id} /></main></div>;
+  if (entry === 'checking') return <div className="spectator-shell"><SiteHeader /><main className="spectator-main"><LoadingRace error={error} onRetry={retry} /></main></div>;
+
   return <div className="spectator-shell"><SiteHeader live={race?.phase === "racing"} />
     <main className="spectator-main">{!race ? <LoadingRace error={error} onRetry={retry} /> : <>
       <div className="race-heading">
