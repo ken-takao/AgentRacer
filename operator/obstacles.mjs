@@ -37,11 +37,14 @@ export function parsePlacement(body, options) {
 export function placementView(run) {
   const state = run?.finalState;
   if (!state?.course || !state?.players?.red || !state?.players?.blue) return null;
+  // Prefer the authoritative read model; older servers publish no pace rules.
+  const rules = { ...PLACEMENT_HINTS, ahead: state.paceRules?.placementAhead === 60 ? 60 : PLACEMENT_HINTS.ahead };
   const players = Object.fromEntries(['red', 'blue'].map(color => [color, { progress: state.players[color].progress, lane: state.players[color].lane }]));
   return {
     raceId: run.raceId, phase: state.phase, updatedAt: state.updatedAt,
     players, count: state.placedObstacleCount || 0, lastPlacedAt: state.lastObstaclePlacedAt || 0,
-    minProgress: Math.max(players.red.progress, players.blue.progress) + PLACEMENT_HINTS.ahead,
+    rules,
+    minProgress: Math.max(players.red.progress, players.blue.progress) + rules.ahead,
     maxProgress: state.course.length - PLACEMENT_HINTS.finishMargin,
     course: { length: state.course.length,
       junctions: (state.course.junctions || []).map(junction => ({ id: junction.id, name: junction.name, start: junction.start, end: junction.end,

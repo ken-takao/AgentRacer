@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DECISION_TOOL, decideDrive } from './drive-decisions.mjs';
+import { createDriveObservation } from './drive-observation.mjs';
 
 const frame = { id: 'cu-frame-1', imageUrl: 'data:image/png;base64,aGVsbG8=', at: 10000 };
 const input = { key: 'test-key-never-display', color: 'red', frame, now: () => 10000 };
@@ -114,4 +115,76 @@ test('an eight-second deadline aborts even a fetch implementation that does not 
     return response(answers('jump'));
   }});
   assert.equal(result.instruction, 'Click JUMP once in 04 / AIR JUMP.');
+});
+
+const textObservation = (phase = 'racing') => createDriveObservation({ color: 'red', observedAt: 10000, state: {
+  phase, updatedAt: 10000, version: 2, course: { length: 200, junctions: [] },
+  players: {
+    red: { joined: true, ready: true, progress: 0, lane: 1, targetLane: 1, speed: 1.8, speedMode: 'normal', jumpAvailable: true,
+      upcomingObstacles: [{ progress: 20, blockedLane: 1, assetId: 'banana_peel' }] },
+    blue: { progress: 2, lane: 2 },
+  },
+} });
+const textInput = observation => ({ key: input.key, color: 'red', observation, now: () => 10000 });
+
+test('text mode retains the same model and ten actions while sending only a sanitized driver observation', async () => {
+  let clock = 10000;
+  const observation = textObservation('countdown'); observation.token = 'private-secret'; observation.driver.secret = 'private-secret';
+  const result = await decideDrive({ ...textInput(observation), now: () => clock, fetchImpl: async (_, init) => {
+    const body = JSON.parse(init.body);
+    assert.equal(body.model, 'gpt-6-luna');
+    assert.deepEqual(body.input[0].content.map(c => c.type), ['input_text']);
+    assert.equal(body.questions.length, 3);
+    assert.equal(body.questions[0].choices.length, 10);
+    const prompt = body.input[0].content[0].text;
+    assert.ok(!prompt.includes('private-secret'));
+    assert.ok(prompt.includes('During lobby and countdown, lane, speed and an unlocked route can be prepared'));
+    assert.ok(prompt.includes('do not choose jump when the crossing time is uncertain'));
+    assert.ok(prompt.includes('Evaluate the safety of the proposed action, not only the current lane'));
+    const choices = Object.fromEntries(body.questions[0].choices.map(choice => [choice.value, choice.description]));
+    assert.match(choices.lane_right, /lane 2 \(RIGHT\).*destination and lanes crossed/);
+    assert.match(choices.speed_turbo, /Never accelerate toward an obstacle/);
+    assert.match(choices.wait, /Lobby and countdown DO allow preparing/);
+    assert.ok(!choices.wait.includes('race is not running'));
+    const payload = JSON.parse(prompt.split('DRIVER_OBSERVATION_JSON\n')[1]);
+    assert.equal(payload.obstacles[0].distance, 20);
+    assert.equal(payload.obstacles[0].kind, 'banana');
+    clock += 450;
+    return response(answers('speed_turbo'));
+  } });
+  assert.equal(result.action, 'speed_turbo'); assert.equal(result.latencyMs, 450);
+  assert.equal(result.observedAt, 10000); assert.equal(result.decidedAt, 10450);
+});
+
+test('text observations require the right player and a two-second request freshness budget', async () => {
+  const observation = textObservation();
+  await assert.rejects(decideDrive({ ...textInput(observation), color: 'blue', fetchImpl: () => assert.fail('must not send') }), failsWith('invalid_observation'));
+  await assert.rejects(decideDrive({ ...textInput(observation), frame, fetchImpl: () => assert.fail('must not send') }), failsWith('invalid_observation'));
+  await assert.rejects(decideDrive({ ...textInput(observation), now: () => 12001, fetchImpl: () => assert.fail('must not send') }), failsWith('stale_observation'));
+  await assert.rejects(decideDrive({ ...textInput(observation), now: () => 8999, fetchImpl: () => assert.fail('must not send') }), failsWith('stale_observation'));
+  const result = await decideDrive({ ...textInput(observation), now: () => 12000, fetchImpl: async () => response(answers('wait')) });
+  assert.equal(result.action, 'wait');
+});
+
+test('text results expire at three seconds even if the model returns a valid action', async () => {
+  let clock = 11900;
+  await assert.rejects(decideDrive({ ...textInput(textObservation()), now: () => clock, fetchImpl: async () => {
+    clock = 13001; return response(answers('lane_left'));
+  } }), failsWith('stale_observation'));
+  clock = 11900;
+  const result = await decideDrive({ ...textInput(textObservation()), now: () => clock, fetchImpl: async () => {
+    clock = 13000; return response(answers('lane_left'));
+  } });
+  assert.equal(result.decidedAt, 13000);
+});
+
+test('text mode cancels an unresponsive API when its remaining observation budget expires', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal;
+  const result = decideDrive({ ...textInput(textObservation()), now: () => 12000, fetchImpl: async (_, init) => {
+    signal = init.signal; return new Promise(() => {});
+  } });
+  const rejected = assert.rejects(result, failsWith('timeout'));
+  t.mock.timers.tick(1000);
+  await rejected; assert.equal(signal.aborted, true);
 });

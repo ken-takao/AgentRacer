@@ -22,6 +22,8 @@ Optional environment settings:
 - `NARRATION_ENABLED`: default enabled; set `0` to run without GPT-Live commentary.
 - `NARRATION_VOICE`: default `shida`, the Japanese masculine GPT-Live voice.
 - `AUTO_START_RACES`: default enabled; set `0` to disable public viewing-page requests and use manual starts only.
+- `DRIVING_MODE`: default `visual`. `telemetry` is an **experimental**, opt-in text-observation decision loop; it is not an established latency or accuracy improvement. Keep it off for public races pending the validation in [the measurement report](../docs/driving-latency.md).
+- `RACE_PACE`: unset retains classic speed. `sprint-2x` requires `DRIVING_MODE=telemetry` and requests an explicit new v2 race with twice the travel speed, a 120-unit driver horizon and a 60-unit minimum obstacle placement distance. It does not modify existing races or jump/spin durations. This mode remains experimental and disabled by default.
 
 Deploy the public game and configure its matching `RACE_ADMIN_KEY` before launching. The game and its state API must be reachable from the hosted browsers. A localhost game cannot be reached by OpenAI-hosted sessions.
 
@@ -76,3 +78,33 @@ The visual decision client is `operator/drive-decisions.mjs`. It uses `POST /v1/
 The public `/api/races/:id/decisions` feed contains only allowlisted decisions and metrics; writes require the race admin key and are ordered by timestamp/count. Older races can have no decision feed. Deploy the site update before starting this operator.
 
 References: [Decisions API](https://developers.openai.com/api/docs/guides/decisions), [Agents API functions](https://developers.openai.com/api/docs/guides/agents-api/tools/functions).
+
+### Text-observation experiment
+
+`drive-observation.mjs` creates a fixed-schema observation from the public state:
+own lane/speed/control availability, visible obstacle distances, the displayed
+rival radar and available branch choices. It excludes credentials, raw text,
+history and the full future obstacle map. `text-driver.mjs` calls the same
+Decisions model directly, then re-reads and validates the state before asking the
+separate hosted CU session to press one visible control. No game input POST is
+sent by the operator. Each driver runs independently; commands never queue.
+
+Observations expire after 2 seconds and decisions before dispatch after 3 seconds.
+Those limits **do not bound the subsequent CU action time**. A late CU click can
+still be strategically stale. The 15-second actor deadline aborts local waiting
+and triggers race/session cleanup; transport abort alone cannot guarantee that a
+hosted click was cancelled. An ambiguous action is not retried. READY must be
+confirmed in the server state, and successful actions require a new matching
+history event and current control state. Unacknowledged actions fail closed,
+including a control that becomes unavailable while the CU turn is in flight.
+
+`/api/status` and the ignored proof file include per-player `timing` records in
+this mode. `firstComputerAt` is receipt of a CU **tool-done** event, not browser
+execution start. `ackObservedAt` is the later state-read time, not input time.
+`endToEndMs` includes state reads, decision generation and the complete actor
+turn. Waiting/expired decisions and failed actions have separate trace records;
+do not count them as successful controls. Review the actual input history too.
+
+For isolated experiments, use a separate `OPERATOR_PORT` and `AUTO_START_RACES=0`;
+never replace an already running operator. The deterministic `/preview/driving`
+page can test CU button latency without creating or mutating a race.

@@ -12,7 +12,7 @@ import "./race-tactics.css";
 
 type Id = "red" | "blue";
 type Driver = RaceEffectState & { progress: number; lane: number; targetLane: number; speed: number; routeChoices?: Record<string, RouteChoice>; carCollisions?: number; lastCarCollisionAt?: number; upcomingObstacles: { id: string; progress: number; blockedLane: number; assetId?: string }[] };
-export type TacticalRace = { phase: string; updatedAt: number; now?: number; course: CourseFeatures & { length: number }; players: Record<Id, Driver> };
+export type TacticalRace = { paceRules?: { visibleDistance: number }; phase: string; updatedAt: number; now?: number; course: CourseFeatures & { length: number }; players: Record<Id, Driver> };
 const names = { red: "SCARLET", blue: "COBALT" };
 const colors = { red: "#ff625b", blue: "#68a4ff" };
 
@@ -102,8 +102,9 @@ export function TacticalRoad({ race, player }: { race: TacticalRace; player: Id 
   const gap = rival.progress - mine.progress;
   const sameRoad = roadKey(race.course, mine) === roadKey(race.course, rival);
   const guidance = routeGuidance(race.course, mine);
+  const visibleDistance = race.paceRules?.visibleDistance ?? 60;
   // Enlarge the near field so the two cars remain distinguishable at bumper distance.
-  const depth = (distance: number) => Math.sign(distance) * (Math.abs(distance) <= 6 ? Math.abs(distance) * 22 : 132 + (Math.abs(distance) - 6) * 2.1);
+  const depth = (distance: number) => Math.sign(distance) * (Math.abs(distance) <= 6 ? Math.abs(distance) * 22 : 132 + (Math.abs(distance) - 6) * (2.1 * 54 / (visibleDistance - 6)));
   const now = race.now ?? race.updatedAt;
   const car = (id: Id, lane: number, y: number, own: boolean) => {
     const effect = raceEffectsAt(race.players[id], now, race.phase);
@@ -116,18 +117,18 @@ export function TacticalRoad({ race, player }: { race: TacticalRace; player: Id 
       {(effect.airborne || effect.spinning) && <text x="0" y={own ? 68 : -58 - effect.height * 7} fill={effect.spinning ? "#ffe274" : "#a7f4ff"} fontSize="13" fontWeight="bold" textAnchor="middle">{effect.spinning ? `SPIN ${(effect.spinRemainingMs / 1000).toFixed(1)}s · 停止中` : `AIR ${(effect.jumpRemainingMs / 1000).toFixed(1)}s`}</text>}
     </g>;
   };
-  return <svg className="road-preview tactical-road" viewBox="0 0 420 440" role="img" aria-label={`前方60ユニットと後方4ユニット。自車と${sameRoad ? "相手車両" : "別ルートの相手は非表示"}、障害物を表示`}>
+  return <svg className="road-preview tactical-road" viewBox="0 0 420 440" role="img" aria-label={`前方${visibleDistance}ユニットと後方4ユニット。自車と${sameRoad ? "相手車両" : "別ルートの相手は非表示"}、障害物を表示`}>
     <defs><pattern id={`lane-dashes-${player}`} x="0" y={(mine.progress * 4.2) % 40} width="110" height="40" patternUnits="userSpaceOnUse"><path d="M45 0V20" stroke="#8d9da4" strokeWidth="2" /></pattern></defs>
     <rect width="420" height="440" rx="12" fill="#11212b" /><path d="M45 45H375V424H45Z" fill="#2c3d48" />
     <rect x="150" y="45" width="120" height="375" fill={`url(#lane-dashes-${player})`} />
     <path d="M45 45V424M375 45V424" stroke="#d8ed94" strokeWidth="4" strokeDasharray="12 10" />
     <text x="210" y="25" textAnchor="middle" fill="#d8ed94" fontSize="12" fontWeight="bold">{guidance.phase === "branch" ? `分岐${guidance.junctionNumber} · ${guidance.direction}ルート走行中（確定）` : guidance.junction ? `本道 → 分岐${guidance.junctionNumber}で${guidance.direction}へ / ${guidance.explicitChoice ? "選択済み" : "既定"}` : "本道 · すべての分岐を通過"}</text>
-    {mine.upcomingObstacles.map(o => { const distance = o.progress - mine.progress; if (distance < -2 || distance > 60) return null; const asset = getObstacleAsset(o.assetId); return <g key={o.id} transform={`translate(${100 + o.blockedLane * 110} ${318 - depth(distance)})`}>
+    {mine.upcomingObstacles.map(o => { const distance = o.progress - mine.progress; if (distance < -2 || distance > visibleDistance) return null; const asset = getObstacleAsset(o.assetId); return <g key={o.id} transform={`translate(${100 + o.blockedLane * 110} ${318 - depth(distance)})`}>
       {asset ? <image href={asset.topUrl} x="-31" y="-31" width="62" height="62"><title>{asset.label}</title></image> : <><rect x="-40" y="-11" width="80" height="22" rx="3" fill="#f2bd54" /><path d="M-30 -10L-10 10M-5 -10L15 10M20 -10L40 10" stroke="#695024" strokeWidth="7" /></>}
       <text x="0" y={asset ? -35 : -19} textAnchor="middle" fill="#ffe0a1" fontSize="12">{asset ? `${asset.label} · ` : ""}{distance.toFixed(0)} u</text>
     </g>; })}
-    {sameRoad && gap >= -4 && gap <= 60 && car(other, rival.lane, 318 - depth(gap), false)}
+    {sameRoad && gap >= -4 && gap <= visibleDistance && car(other, rival.lane, 318 - depth(gap), false)}
     {car(player, mine.lane, 318, true)}
-    <text x="100" y="410" textAnchor="middle" fill="#c0d0d5" fontSize="11">左車線</text><text x="210" y="410" textAnchor="middle" fill="#c0d0d5" fontSize="11">中央車線</text><text x="320" y="410" textAnchor="middle" fill="#c0d0d5" fontSize="11">右車線</text><text x="210" y="431" textAnchor="middle" fill="#b8c9d2" fontSize="11">FRONT 60 u / REAR 4 u · 車両同士も衝突します</text>
+    <text x="100" y="410" textAnchor="middle" fill="#c0d0d5" fontSize="11">左車線</text><text x="210" y="410" textAnchor="middle" fill="#c0d0d5" fontSize="11">中央車線</text><text x="320" y="410" textAnchor="middle" fill="#c0d0d5" fontSize="11">右車線</text><text x="210" y="431" textAnchor="middle" fill="#b8c9d2" fontSize="11">FRONT {visibleDistance} u / REAR 4 u · 車両同士も衝突します</text>
   </svg>;
 }

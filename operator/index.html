@@ -146,6 +146,9 @@ function drawPlacementAvailability() {
   const estimatedNow = (placement?.updatedAt || placementReceivedAt) + Date.now() - placementReceivedAt;
   const cooldown = placement?.lastPlacedAt ? Math.max(0, placement.lastPlacedAt + placementRules.cooldownMs - estimatedNow) : 0;
   const enabled = Boolean(latestState?.canPlaceObstacle && obstacleOptions.length && !busy && !placementBusy);
+  if (placement?.rules) placementRules = placement.rules;
+  $('prop-ahead').textContent = '先頭の' + (placementRules.ahead + 8) + '先';
+  $('placement-rules').textContent = '両車の' + placementRules.ahead + '以上前方・同じレーンと分岐では間隔' + placementRules.spacing + '以上・最大' + placementRules.limit + '個・設置間隔' + placementRules.cooldownMs / 1000 + '秒。';
   const finishedSpace = placement && placement.minProgress > placement.maxProgress;
   const full = placement?.count >= placementRules.limit;
   $('prop-place').disabled = !enabled || cooldown > 0 || full || finishedSpace;

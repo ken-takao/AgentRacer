@@ -6,6 +6,7 @@ import { getObstacleAsset } from "./obstacle-catalog.ts";
 export type PlayerId = "red" | "blue";
 export type Lane = 0 | 1 | 2;
 export type SpeedMode = "slow" | "normal" | "turbo";
+export type RacePace = "sprint-2x";
 export type RacePhase = "lobby" | "countdown" | "racing" | "finished" | "cancelled";
 export type RaceInput =
   | { type: "join" }
@@ -36,6 +37,15 @@ export const RACE_RULES = {
   placementCooldownMs: 1_500,
   speeds: { slow: 1, normal: 1.8, turbo: 2.5 },
 } as const;
+
+const CLASSIC_PACE_RULES = Object.freeze({ speedMultiplier: 1, visibleDistance: RACE_RULES.visibleDistance, placementAhead: RACE_RULES.placementAhead });
+const SPRINT_PACE_RULES = Object.freeze({ speedMultiplier: 2, visibleDistance: 120, placementAhead: 60 });
+export type RacePaceRules = Readonly<{ speedMultiplier: number; visibleDistance: number; placementAhead: number }>;
+
+/** A saved opt-in selects a stable ruleset; missing fields and all v1 races stay classic. */
+export function racePaceRules(state: Pick<RaceState, "version" | "pace">): RacePaceRules {
+  return state.version === 2 && state.pace === "sprint-2x" ? SPRINT_PACE_RULES : CLASSIC_PACE_RULES;
+}
 
 export interface Obstacle {
   id: string;
@@ -97,6 +107,8 @@ interface CarContact { axis: "progress" | "lane"; direction: number }
 
 export interface RaceState {
   version: 1 | 2;
+  /** Immutable at creation; never inferred from a deployment's current defaults. */
+  pace?: RacePace;
   seed: string;
   phase: RacePhase;
   createdAt: number;
@@ -126,6 +138,7 @@ export type PublicRacer = Omit<Racer, "nextObstacleIndex"> & {
 export type PublicRaceState = Omit<RaceState, "players" | "carContact"> & {
   players: Record<PlayerId, PublicRacer>;
   remainingMs: number;
+  paceRules: RacePaceRules;
 };
 
 export class RaceRuleError extends Error {
@@ -188,8 +201,11 @@ function arrivalTime(cursor: number, distance: number, speed: number): number {
   return distance <= EPSILON ? cursor : speed > EPSILON ? cursor + distance / speed * 1000 : Infinity;
 }
 
-export function createRace(seed: string | number, now: number): RaceState {
+export function createRace(seed: string | number, now: number, options: { pace?: RacePace } = {}): RaceState {
   validTime(now);
+  if (!options || typeof options !== "object" || Array.isArray(options) || (options.pace !== undefined && options.pace !== "sprint-2x")) {
+    throw new RaceRuleError("INVALID_INPUT", "Unknown race pace");
+  }
   if ((typeof seed !== "string" && typeof seed !== "number") || (typeof seed === "number" && !Number.isFinite(seed))) {
     throw new RaceRuleError("INVALID_INPUT", "seed must be a string or finite number");
   }
@@ -218,7 +234,7 @@ export function createRace(seed: string | number, now: number): RaceState {
     slowedUntil: 0, nextObstacleIndex: 0, routeChoices: {}, carCollisions: 0,
   });
   return {
-    version: 2, seed: seedText, phase: "lobby", createdAt: now, updatedAt: now,
+    version: 2, ...(options.pace ? { pace: options.pace } : {}), seed: seedText, phase: "lobby", createdAt: now, updatedAt: now,
     countdownEndsAt: null, startedAt: null, finishedAt: null, finishReason: null, winner: null,
     players: { red: player("red", 0), blue: player("blue", 2) },
     course: { length: RACE_RULES.length, obstacles, ...features }, history: [],
@@ -345,7 +361,7 @@ function motionAt(state: RaceState, at: number, origin = 0): Motion {
   for (const id of IDS) {
     const player = state.players[id];
     if (!isSpinning(player, at, origin)) {
-      speed[id] = movingSpeed(player, at, origin) * routeSpeedMultiplier(state.course, player);
+      speed[id] = movingSpeed(player, at, origin) * racePaceRules(state).speedMultiplier * routeSpeedMultiplier(state.course, player);
       lane[id] = Math.abs(player.targetLane - player.lane) > EPSILON ? Math.sign(player.targetLane - player.lane) * RACE_RULES.laneChangePerSecond : 0;
     }
   }
@@ -621,9 +637,10 @@ export function placeObstacle(source: RaceState, input: ObstaclePlacement, now: 
   if (input.progress < 0 || input.progress > state.course.length - RACE_RULES.placementFinishMargin) {
     throw new RaceRuleError("INVALID_INPUT", "コース内のゴール手前3以上の位置を指定してください");
   }
-  const minimum = Math.max(...IDS.map(id => state.players[id].progress)) + RACE_RULES.placementAhead;
+  const placementAhead = racePaceRules(state).placementAhead;
+  const minimum = Math.max(...IDS.map(id => state.players[id].progress)) + placementAhead;
   if (input.progress < minimum - EPSILON) {
-    throw new RaceRuleError("RACE_NOT_AVAILABLE", "両車より12以上前方に設置してください");
+    throw new RaceRuleError("RACE_NOT_AVAILABLE", `両車より${placementAhead}以上前方に設置してください`);
   }
   const junction = activeJunction(state.course, input.progress);
   if (junction && input.route === undefined) throw new RaceRuleError("INVALID_INPUT", "分岐内に設置する場合は左または右を選択してください");
@@ -726,9 +743,10 @@ export function applyInput(source: RaceState, playerId: PlayerId, input: RaceInp
   return state;
 }
 
-/** Read model: no engine cursors, and only the next 60 units of obstacles per driver. */
+/** Read model: no engine cursors; each driver's obstacle horizon follows the saved pace. */
 export function publicView(source: RaceState): PublicRaceState {
   const state = copy(source);
+  const paceRules = racePaceRules(state);
   const { carContact: _contact, ...visibleState } = state;
   const motion = state.version === 2 ? motionAt(state, state.updatedAt) : undefined;
   const playerView = (id: PlayerId): PublicRacer => {
@@ -740,15 +758,16 @@ export function publicView(source: RaceState): PublicRaceState {
       spinRemainingMs: Math.max(0, (player.spinEndsAt ?? 0) - state.updatedAt),
       speed: state.phase === "racing" ? motion?.speed[id] ?? movingSpeed(state.players[id], state.updatedAt) : 0,
       laneVelocity: state.phase === "racing" ? motion?.lane[id] ?? (Math.abs(player.targetLane - player.lane) > EPSILON ? Math.sign(player.targetLane - player.lane) * RACE_RULES.laneChangePerSecond : 0) : 0,
-      upcomingObstacles: state.course.obstacles.filter((obstacle) => obstacle.progress > player.progress + EPSILON && obstacle.progress <= player.progress + RACE_RULES.visibleDistance && (state.version === 1 || appliesToRoute(state, state.players[id], obstacle))),
+      upcomingObstacles: state.course.obstacles.filter((obstacle) => obstacle.progress > player.progress + EPSILON && obstacle.progress <= player.progress + paceRules.visibleDistance && (state.version === 1 || appliesToRoute(state, state.players[id], obstacle))),
     };
   };
   const red = playerView("red");
   const blue = playerView("blue");
   const minimum = Math.min(red.progress, blue.progress) - 5;
-  const maximum = Math.max(red.progress, blue.progress) + RACE_RULES.visibleDistance;
+  const maximum = Math.max(red.progress, blue.progress) + paceRules.visibleDistance;
   return {
     ...visibleState,
+    paceRules: { ...paceRules },
     players: { red, blue },
     course: { ...state.course, obstacles: state.version === 2 ? state.course.obstacles : state.course.obstacles.filter((obstacle) => obstacle.progress >= minimum && obstacle.progress <= maximum) },
     remainingMs: state.phase === "finished" || state.phase === "cancelled" ? 0 : state.startedAt === null ? RACE_RULES.maxRaceMs : Math.max(0, state.startedAt + RACE_RULES.maxRaceMs - state.updatedAt),

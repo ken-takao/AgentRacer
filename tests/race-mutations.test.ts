@@ -118,3 +118,31 @@ test('before start and after finish jumps are rejected without persisting clock 
     assert.deepEqual(h.stored, previous);
   }
 });
+
+test('sprint jump and placement preserve pace and sixty-unit lead checks through CAS retries', async context => {
+  context.mock.method(Date, 'now', () => now);
+  let initial = createRace('sprint-mutations', now - 5000, { pace: 'sprint-2x' });
+  initial.course.obstacles = []; initial.course.junctions = [];
+  for (const player of ['red', 'blue'] as const) {
+    initial = applyInput(initial, player, { type: 'join' }, now - 5000);
+    initial = applyInput(initial, player, { type: 'ready' }, now - 5000);
+  }
+  initial = advance(initial, now);
+  const h = await harness(initial, 3);
+  const results = await Promise.all([
+    h.post('input', jump, 'red-player'),
+    h.post('input', { player: 'blue', input: { type: 'lane', lane: 1 } }, 'blue-player'),
+    h.post('obstacles', { ...obstacle, progress: 60 }),
+  ]);
+  assert.deepEqual(results.map(response => response.status), [200, 200, 201]);
+  assert.equal(h.state().pace, 'sprint-2x');
+  assert.equal(h.state().players.red.jumpEndsAt, now + 800);
+  assert.equal(h.state().history.filter(event => event.type === 'obstacle_placed').length, 1);
+  assert.ok(h.conflicts() > 0);
+  const before = { ...h.stored };
+  const rejected = await h.post('obstacles', { ...obstacle, lane: 2, progress: 59 });
+  assert.equal(rejected.status, 409);
+  const rejectedBody = await rejected.json() as { error: string };
+  assert.match(rejectedBody.error, /60以上/);
+  assert.deepEqual(h.stored, before);
+});

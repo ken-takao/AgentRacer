@@ -11,6 +11,169 @@ test('env parser preserves quoted values and ignores comments', () => {
   assert.deepEqual(parseEnv('A=one # comment\nB="two three"\nexport C=42\n# D=no'), { A: 'one', B: 'two three', C: '42' });
 });
 
+// The real operator and its SSE loop run against a mocked Platform/game only.
+// These fixtures never POST a player input; an accepted visible action is
+// represented by the hosted turn updating the mock game's public history.
+async function telemetryFixture(mode) {
+  const directory = await mkdtemp(join(tmpdir(), 'race-telemetry-test-'));
+  const savedFetch = globalThis.fetch;
+  const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
+  const sessions = new Map(), deleted = new Set(), gatedSignals = [];
+  const stats = { decisions: 0, drivingMessages: 0, stopRequests: 0 };
+  const encoder = new TextEncoder();
+  let stateClock = Date.now(), phase = 'lobby', releaseRead;
+  const readGate = new Promise(resolve => { releaseRead = resolve; });
+  const players = Object.fromEntries(['red', 'blue'].map(color => [color, {
+    progress: 20, lane: 1, targetLane: 1, speedMode: 'normal', speed: 1.8,
+    joined: true, ready: false, jumpAvailable: false, upcomingObstacles: [], routeChoices: {}, collisionCount: 0,
+  }]));
+  const history = [];
+  const snapshot = () => ({ state: { phase, version: 2, updatedAt: ++stateClock, winner: phase === 'finished' ? 'red' : null,
+    players: structuredClone(players), history: structuredClone(history), course: { length: 200, junctions: [], obstacles: [] } } });
+  const config = { key: 'telemetry-fixture-openai', admin: 'telemetry-fixture-admin', origin: 'https://game.invalid', drivingMode: 'telemetry', narrationEnabled: false };
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if (target.hostname === '127.0.0.1') return savedFetch(url, init);
+    if (target.hostname === 'game.invalid') {
+      assert.equal(init.headers.Authorization, `Bearer ${config.admin}`);
+      if (target.pathname === '/api/races') return json({ id: 'race_telemetry_fixture',
+        playerUrls: { red: 'https://game.invalid/play/race_telemetry_fixture/red#red-capability', blue: 'https://game.invalid/play/race_telemetry_fixture/blue#blue-capability' },
+        spectatorUrl: 'https://game.invalid/race/race_telemetry_fixture' }, 201);
+      if (target.pathname.includes('/frame/') || target.pathname.endsWith('/telemetry') || target.pathname.endsWith('/decisions')) return json({ ok: true });
+      if (target.pathname.endsWith('/stop')) { stats.stopRequests++; phase = 'cancelled'; return json(snapshot()); }
+      assert.equal(init.method, undefined, 'the operator must never bypass Computer Use with a player input POST');
+      assert.equal(target.pathname, '/api/races/race_telemetry_fixture');
+      if (mode === 'stop' && stats.decisions > 0 && phase !== 'cancelled') {
+        gatedSignals.push(init.signal);
+        // Deliberately ignore abort, like an already-returning network response.
+        await readGate;
+      }
+      return json(snapshot());
+    }
+    assert.equal(target.origin, 'https://api.openai.com', 'all external work is mocked');
+    assert.equal(init.headers.Authorization, `Bearer ${config.key}`);
+    if (target.pathname === '/v1/decisions') {
+      stats.decisions++;
+      const body = JSON.parse(init.body);
+      assert.ok(body.input[0].content.every(item => item.type === 'input_text'));
+      const observation = JSON.parse(body.input[0].content[0].text.split('DRIVER_OBSERVATION_JSON\n')[1]);
+      const action = observation.driver.targetLane === 0 ? 'wait' : 'lane_left';
+      return json({ answers: [
+        { type: 'choice', name: 'action', choice: action, confidence: 0.9 },
+        { type: 'predicate', name: 'obstacle_risk', probability: 0.8 },
+        { type: 'predicate', name: 'rival_risk', probability: 0.2 },
+      ] });
+    }
+    assert.equal(init.headers['OpenAI-Beta'], 'agents=v1');
+    if (target.pathname === '/v1/agents/sessions') {
+      const body = JSON.parse(init.body);
+      assert.deepEqual(body.agent.tools.map(tool => tool.type), ['computer_use']);
+      const color = body.agent.instructions.includes('the red UI operator') ? 'red' : 'blue';
+      const id = `sess_telemetry_${color}`;
+      sessions.set(id, { color, messages: 0, controller: null });
+      return json({ id }, 201);
+    }
+    const id = target.pathname.split('/')[4], session = sessions.get(id);
+    assert.ok(session);
+    if (init.method === 'DELETE') { deleted.add(id); return new Response(null, { status: 204 }); }
+    assert.ok(target.pathname.endsWith('/events'));
+    if (!init.method) return new Response(new ReadableStream({ start(controller) {
+      session.controller = controller;
+      init.signal.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')), { once: true });
+    } }), { headers: { 'Content-Type': 'text/event-stream' } });
+    const event = JSON.parse(init.body).events[0];
+    if (event.type === 'agent.session.input.cancel') return json({ accepted: true }, 202);
+    assert.equal(event.type, 'agent.session.input.message');
+    session.messages++;
+    const text = event.input[0].content[0].text;
+    const turn = `${id}_turn_${session.messages}`;
+    const emit = item => session.controller.enqueue(encoder.encode(`data: ${JSON.stringify(item)}\n\n`));
+    if (session.messages === 1) {
+      assert.match(text, /Click READY once/);
+      if (mode !== 'unready') players[session.color].ready = true;
+      if (Object.values(players).every(player => player.ready)) phase = 'racing';
+      // Child failures must not fail a main telemetry actor or the whole run.
+      emit({ type: 'agent.session.turn.failed', event_id: `${turn}_child`, subagent_id: 'child', turn: { id: `${turn}_child` } });
+    } else {
+      stats.drivingMessages++;
+      assert.match(text, /Click LEFT once.*CHOOSE YOUR LANE/);
+      players[session.color].targetLane = players[session.color].lane = 0;
+      history.push({ type: 'lane_change', playerId: session.color, lane: 0, at: ++stateClock });
+      if (Object.values(players).every(player => player.targetLane === 0)) phase = 'finished';
+    }
+    emit({ type: 'agent.session.turn.item.done', event_id: `${turn}_frame`, turn_id: turn,
+      item: { id: `${turn}_computer`, type: 'computer_use_call', title: 'Mock visible control', output: { type: 'computer_screenshot', image_url: 'data:image/jpeg;base64,YQ==' } } });
+    emit({ type: 'agent.session.turn.completed', event_id: `${turn}_complete`, turn: { id: turn } });
+    return json({ accepted: true }, 202);
+  };
+  const port = 4198;
+  const operator = await createOperatorServer({ port, proofFile: join(directory, 'proof.json'), loadConfig: async () => config });
+  await new Promise(resolve => operator.server.listen(port, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${port}`;
+  const post = path => savedFetch(base + path, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: '{}' });
+  const waitFor = async predicate => {
+    for (let i = 0; i < 150; i++) {
+      const status = operator.status();
+      if (predicate(status)) return status;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.fail(`Telemetry fixture did not settle: ${JSON.stringify(operator.status())}`);
+  };
+  return { operator, post, waitFor, stats, sessions, deleted, gatedSignals, releaseRead,
+    async dispose() { releaseRead(); await operator.stop(); globalThis.fetch = savedFetch; await rm(directory, { recursive: true, force: true }); } };
+}
+
+test('telemetry preparation stops clearly when a completed turn did not establish READY', async () => {
+  const f = await telemetryFixture('unready');
+  try {
+    assert.equal((await f.post('/api/start')).status, 202);
+    const state = await f.waitFor(state => state.canStart);
+    assert.equal(state.stage, 'failed');
+    assert.match(state.error, /did not complete driver READY/);
+    assert.equal(f.stats.decisions, 0);
+    assert.equal(f.stats.drivingMessages, 0);
+    assert.equal(f.deleted.size, 2);
+    assert.equal(state.cleanupPending, false);
+  } finally { await f.dispose(); }
+});
+
+test('telemetry drivers acknowledge actual visible inputs and complete both session cleanups', async () => {
+  const f = await telemetryFixture('ack');
+  try {
+    assert.equal((await f.post('/api/start')).status, 202);
+    const state = await f.waitFor(state => state.canStart);
+    assert.equal(state.stage, 'completed', state.error || JSON.stringify(state));
+    assert.equal(state.drivingMode, 'telemetry');
+    assert.equal(f.stats.drivingMessages, 2);
+    assert.equal(f.deleted.size, 2);
+    for (const color of ['red', 'blue']) {
+      assert.equal(state.players[color].drivingInputs, 1);
+      assert.equal(state.players[color].continuations, 0);
+      assert.equal(state.players[color].cleanupDeleted, true);
+      assert.ok(state.players[color].timing.some(trace => trace.acknowledged === true));
+      assert.equal(f.sessions.get(`sess_telemetry_${color}`).messages, 2, 'one READY turn and one driving turn only');
+    }
+    assert.doesNotMatch(JSON.stringify(state), /telemetry-fixture-openai|telemetry-fixture-admin|red-capability|blue-capability/);
+  } finally { await f.dispose(); }
+});
+
+test('telemetry stop aborts revalidation immediately and cannot submit a late driving command', async () => {
+  const f = await telemetryFixture('stop');
+  try {
+    assert.equal((await f.post('/api/start')).status, 202);
+    await f.waitFor(() => f.gatedSignals.length >= 2);
+    assert.equal(f.stats.drivingMessages, 0);
+    assert.equal((await f.post('/api/stop')).status, 202);
+    assert.ok(f.gatedSignals.filter(signal => signal.aborted).length >= 2, 'both driver GET signals abort before their responses arrive');
+    f.releaseRead();
+    const state = await f.waitFor(state => state.canStart);
+    assert.equal(state.stage, 'cancelled', state.error || JSON.stringify(state));
+    assert.equal(f.stats.drivingMessages, 0);
+    assert.equal(f.deleted.size, 2);
+    assert.equal(f.stats.stopRequests, 1);
+  } finally { await f.dispose(); }
+});
+
 test('driving evidence excludes joins and READY actions', () => {
   assert.deepEqual(drivingInputs({ history: [
     { type: 'joined', playerId: 'red' }, { type: 'ready', playerId: 'red' },

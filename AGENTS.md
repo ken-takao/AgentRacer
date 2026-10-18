@@ -69,9 +69,12 @@ product and `operator/README.md` before changing the operator or AI integrations
   operator's loopback binding, same-origin/Host checks, fixed destination forwarding,
   and race/player-scoped capability authentication. Do not log or commit secrets.
 - AI drivers use the **2D** controls; spectators use **3D**. Keep lane selection
-  distinct from fork selection. Decisions use the driver's current screenshot;
-  Computer Use performs the resulting visible control action. Do not substitute
-  direct game API calls or expose hidden/future game state to the driver.
+  distinct from fork selection. By default Decisions use the driver's current
+  screenshot. The opt-in telemetry experiment supplies an allowlisted text view of
+  the same visible distances and controls; Computer Use still performs each
+  resulting visible control action. Do not substitute direct game input API calls
+  or expose hidden/future game state to the driver. See `docs/driving-latency.md`:
+  neither telemetry driving nor sprint pace is validated for production enablement.
 - `lib/circuit-geometry.ts` and `lib/model-contact.ts` place models on the road.
   Preserve continuity and separate overpass levels. Ground assets from their actual
   bounds and road frame, not a universal height offset. Preserve timeline buffering
@@ -81,6 +84,7 @@ product and `operator/README.md` before changing the operator or AI integrations
 
 - Run `npm run dev` and use deterministic previews without starting a real race:
   `/preview/routes`, `/preview/effects`, `/preview/roadster`, `/preview/assets`.
+  `/preview/driving` is a browser-local control fixture with no race API calls.
   `/preview/narration` plays a recorded sample, not a new AI session.
 - Route/geometry changes must cover harbor, alpine, and metro; both forks and both
   routes; approach, entry, middle, merge, exit, and overpass. Check chase/spectator
