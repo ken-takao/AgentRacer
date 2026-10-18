@@ -8,16 +8,18 @@ type Phase = "lobby" | "countdown" | "racing" | "finished" | "cancelled";
 type AudioStatus = "standby" | "ready" | "starting" | "playing" | "blocked" | "muted" | "error";
 
 /** One spectator-owned audio element. Driver pages should not mount this component. */
-export function RaceAudio({ phase, raceId, compact = false }: { phase: Phase; raceId: string; compact?: boolean }) {
+export function RaceAudio({ phase, raceId, compact = false, ducked = false }: { phase: Phase; raceId: string; compact?: boolean; ducked?: boolean }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const latest = useRef({ phase, raceId });
-  latest.current = { phase, raceId };
+  useEffect(() => { latest.current = { phase, raceId }; }, [phase, raceId]);
   const mounted = useRef(false);
   const enabled = useRef(true);
   const armed = useRef(false);
   // Invalidates a pending play() when the user mutes, the phase changes, or we unmount.
   const generation = useRef(0);
   const volumeRef = useRef(0.45);
+  const duckedRef = useRef(ducked);
+  useEffect(() => { duckedRef.current = ducked; }, [ducked]);
   const [volume, setVolume] = useState(45);
   const [status, setStatus] = useState<AudioStatus>("standby");
 
@@ -37,7 +39,7 @@ export function RaceAudio({ phase, raceId, compact = false }: { phase: Phase; ra
     const attempt = ++generation.current;
     const requestedRace = latest.current.raceId;
     const isCurrent = () => mounted.current && attempt === generation.current && requestedRace === latest.current.raceId;
-    audio.volume = volumeRef.current;
+    audio.volume = volumeRef.current * (duckedRef.current ? .22 : 1);
     // A preparation click exercises the same media element without making sound.
     // Browsers may still require another click when the race starts; handle that below.
     audio.muted = prime || latest.current.phase !== "racing";
@@ -76,6 +78,22 @@ export function RaceAudio({ phase, raceId, compact = false }: { phase: Phase; ra
       stop();
     };
   }, [phase, raceId, start, stop]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const from = audio.volume;
+    const startedAt = performance.now();
+    let animation: number;
+    const ramp = () => {
+      const fraction = Math.min(1, (performance.now() - startedAt) / (ducked ? 140 : 450));
+      const target = volumeRef.current * (ducked ? .22 : 1);
+      audio.volume = from + (target - from) * fraction;
+      if (fraction < 1) animation = requestAnimationFrame(ramp);
+    };
+    animation = requestAnimationFrame(ramp);
+    return () => cancelAnimationFrame(animation);
+  }, [ducked]);
 
   const toggle = () => {
     if (status === "playing" || status === "ready" || status === "starting") {
@@ -120,7 +138,7 @@ export function RaceAudio({ phase, raceId, compact = false }: { phase: Phase; ra
         {active ? <Volume2 size={17} aria-hidden="true" /> : <VolumeX size={17} aria-hidden="true" />}{buttonText}
       </button>
       <label className="race-audio-volume"><span>音量</span><input type="range" min="0" max="100" step="5" value={volume} aria-label="BGMの音量" aria-valuetext={`${volume}%`}
-        onChange={event => { const next = Number(event.currentTarget.value); setVolume(next); volumeRef.current = next / 100; if (audioRef.current) audioRef.current.volume = next / 100; }} /><output>{volume}%</output></label>
+        onChange={event => { const next = Number(event.currentTarget.value); setVolume(next); volumeRef.current = next / 100; if (audioRef.current) audioRef.current.volume = next / 100 * (duckedRef.current ? .22 : 1); }} /><output>{volume}%</output></label>
     </div>
     <p className="race-audio-help">{status === "blocked" ? "ブラウザーの自動再生制限のため、ボタンを押して音声を有効にしてください。"
       : status === "error" ? "接続を確認して「再試行」を押してください。音楽なしでもレースは続きます。"

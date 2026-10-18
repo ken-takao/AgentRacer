@@ -1,0 +1,56 @@
+{
+  "model": "gpt-live-1",
+  "voice": "shida",
+  "recorded": true,
+  "durationMs": 34860,
+  "captions": [
+    {
+      "id": "95cb21cb-1c1f-4fb5-8fc4-f60b55c51371:0",
+      "text": "AI実況、ピット・ハヤテです。",
+      "startMs": 0,
+      "endMs": 2200
+    },
+    {
+      "id": "95cb21cb-1c1f-4fb5-8fc4-f60b55c51371:1",
+      "text": "今、スタート!",
+      "startMs": 5400,
+      "endMs": 6000
+    },
+    {
+      "id": "95cb21cb-1c1f-4fb5-8fc4-f60b55c51371:2",
+      "text": " スカーレットとコバルトが跳び出した!",
+      "startMs": 6000,
+      "endMs": 8200
+    },
+    {
+      "id": "95cb21cb-1c1f-4fb5-8fc4-f60b55c51371:3",
+      "text": "スカーレット、障害物に当たり減速です!",
+      "startMs": 12200,
+      "endMs": 14800
+    },
+    {
+      "id": "95cb21cb-1c1f-4fb5-8fc4-f60b55c51371:4",
+      "text": "スカーレットとコバルトが接触、両者減速!",
+      "startMs": 18200,
+      "endMs": 21400
+    },
+    {
+      "id": "95cb21cb-1c1f-4fb5-8fc4-f60b55c51371:5",
+      "text": "スカーレット、立て直した!",
+      "startMs": 24800,
+      "endMs": 26400
+    },
+    {
+      "id": "95cb21cb-1c1f-4fb5-8fc4-f60b55c51371:6",
+      "text": "コバルト、ここからだ!",
+      "startMs": 27800,
+      "endMs": 29200
+    },
+    {
+      "id": "95cb21cb-1c1f-4fb5-8fc4-f60b55c51371:7",
+      "text": "ゴール! 勝者はスカーレット、両者見事な走りです。",
+      "startMs": 31800,
+      "endMs": 36200
+    }
+  ]
+}

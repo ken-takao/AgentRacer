@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:workers';
 import { advance, applyInput, cancelRace, createRace, publicView, RaceRuleError, type RaceInput, type RaceState, type PlayerId } from '../../../../lib/race-engine';
+import { isNarrationWav, sanitizeNarrationFeed, validGeneration } from '../../../../lib/narration-feed';
 export const dynamic = 'force-dynamic';
 const json = (data: unknown, status = 200) => Response.json(data, {status, headers:{'Cache-Control':'no-store'}});
 class HttpError extends Error { constructor(message:string, public status=400){super(message);} }
@@ -30,6 +31,17 @@ async function handle(request:Request,context:{params:Promise<{path?:string[]}>}
   if(path.length===1&&path[0]==='latest'){const latest=await db().prepare('SELECT id FROM races ORDER BY created_at DESC LIMIT 1').first<{id:string}>();return json({id:latest?.id||null});}
   const id=validId(path[0]||'');const found=await row(id);
   if(path.length===1)return json(await view(found));
+  if(path.length===2&&path[1]==='narration'){
+   const feed=await bucket().get(`${id}/narration/feed.json`);
+   if(!feed)throw new HttpError('Narration not started',404);
+   return new Response(feed.body,{headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
+  }
+  if(path.length===5&&path[1]==='narration'&&path[2]==='audio'){
+   if(!validGeneration(path[3])||!/^\d{1,6}$/.test(path[4]))throw new HttpError('Audio not found',404);
+   const audio=await bucket().get(`${id}/narration/${path[3]}/${Number(path[4])}.wav`);
+   if(!audio)throw new HttpError('Audio not found',404);
+   return new Response(audio.body,{headers:{'Content-Type':'audio/wav','Cache-Control':'public, max-age=86400, immutable','X-Content-Type-Options':'nosniff'}});
+  }
   if(path.length===3&&path[1]==='frame'){const p=player(path[2]);const image=await bucket().get(`${id}/${p}`);if(!image)throw new HttpError('No screenshot yet',404);return new Response(image.body,{headers:{'Content-Type':image.httpMetadata?.contentType||'image/jpeg','Cache-Control':'no-cache','X-Content-Type-Options':'nosniff'}});}
   throw new HttpError('Not found',404);
  }
@@ -52,6 +64,31 @@ async function handle(request:Request,context:{params:Promise<{path?:string[]}>}
   const result=await mutate(id,(state,found)=>{if(found.expires_at<Date.now())throw new HttpError('Player link expired',410);if(digest!==found[p==='red'?'red_hash':'blue_hash'])throw new HttpError('Wrong player link',403);return applyInput(state,p,input.input as RaceInput,Date.now());});return json(result);
  }
  await requireAdmin(request);await row(id);
+ if(path.length===2&&path[1]==='narration'){
+  if(!request.headers.get('content-type')?.startsWith('application/json'))throw new HttpError('JSON required',415);
+  if(Number(request.headers.get('content-length'))>128000)throw new HttpError('Feed too large',413);
+  const raw=await request.text();if(raw.length>128000)throw new HttpError('Feed too large',413);
+  let feed;try{feed=sanitizeNarrationFeed(JSON.parse(raw),id);}catch{throw new HttpError('Invalid narration feed');}
+  const key=`${id}/narration/feed.json`;
+  for(let attempt=0;attempt<6;attempt++){
+   const current=await bucket().get(key);
+   if(current){
+    const previous=await current.json<{generationId:string;revision?:number;startedAt:number}>();
+    if(previous.generationId===feed.generationId?(previous.revision??0)>=feed.revision:previous.startedAt>=feed.startedAt)return json({ok:true,stale:true});
+   }
+   const written=await bucket().put(key,JSON.stringify(feed),{httpMetadata:{contentType:'application/json'},onlyIf:current?{etagMatches:current.etag}:{etagDoesNotMatch:'*'}});
+   if(written)return json({ok:true});
+  }
+  throw new HttpError('Narration update conflict',409);
+ }
+ if(path.length===5&&path[1]==='narration'&&path[2]==='audio'){
+  if(!validGeneration(path[3])||!/^\d{1,6}$/.test(path[4]))throw new HttpError('Invalid audio ID');
+  if(request.headers.get('content-type')?.split(';')[0]!=='audio/wav')throw new HttpError('WAV required',415);
+  if(Number(request.headers.get('content-length'))>240044)throw new HttpError('Audio too large',413);
+  const bytes=await request.arrayBuffer();if(!isNarrationWav(bytes))throw new HttpError('Invalid WAV',415);
+  await bucket().put(`${id}/narration/${path[3]}/${Number(path[4])}.wav`,bytes,{httpMetadata:{contentType:'audio/wav'}});
+  return json({ok:true,url:`/api/races/${id}/narration/audio/${path[3]}/${Number(path[4])}`});
+ }
  if(path.length===2&&path[1]==='stop'){return json(await mutate(id,s=>cancelRace(s,Date.now())));}
  if(path.length===2&&path[1]==='telemetry'){
   const data=await body(request);const p=player(data.player);await db().prepare('UPDATE race_telemetry SET status = ?, session_id = COALESCE(?,session_id), actions = MAX(actions,?) WHERE race_id = ? AND player = ?').bind(String(data.status||'実行中').slice(0,100),typeof data.sessionId==='string'?data.sessionId.slice(0,120):null,Math.max(0,Math.min(10000,Number(data.actions)||0)),id,p).run();return json({ok:true});

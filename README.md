@@ -80,6 +80,12 @@ AIの準備中は55秒を目安にタイムゲージと各ドライバーの接�
 
 走行中は `public/audio/turbo-battle-final-lap.mp3` をループ再生し、終了・中止で停止します。ブラウザーの自動再生制限がある場合は観戦画面のBGMボタンを押してください。音量調整とミュートができます。添付された音源を収録しています。
 
+### GPT-LiveのAI実況
+
+観戦画面のオリジナル実況者「ピット・ハヤテ」が、開始・接触・障害物による減速・逆転・ゴールを実況します。ローカルoperatorがレースごとに1つの `gpt-live-1` セッションを管理し、ゲームの確定情報をテキストで渡します。日本語音声 `shida` と実際の発話の字幕を全観戦者へ共有します。実況音声は「実況を聴く」で有効になり、ミュート中でも字幕は表示されます。発話中はBGMを下げます。
+
+システムプロンプトは `operator/narration-director.mjs`、音声接続と終了処理は `operator/live-narrator.mjs`、吹き出しと再生処理は `app/race-narration.tsx`。音声APIキーはoperatorだけが保持します。動作例は `/preview/narration` の収録済みGPT-Liveサンプルで確認できます。詳細は [operator/README.md](operator/README.md) を参照してください。
+
 ## 構成
 
 - `lib/race-engine.ts`: 時計に基づく決定的なレース計算

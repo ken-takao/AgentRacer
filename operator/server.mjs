@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { createLiveNarrator } from './live-narrator.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SITE_ROOT = resolve(HERE, '..');
@@ -34,8 +35,8 @@ async function readEnv(path) {
 
 async function loadConfiguration() {
   const [rootEnv, siteEnv] = await Promise.all([
-    readEnv(resolve(WORKSPACE_ROOT, '.env.local')),
-    readEnv(resolve(SITE_ROOT, '.dev.vars')),
+    readEnv(process.env.OPENAI_ENV_FILE || resolve(WORKSPACE_ROOT, '.env.local')),
+    readEnv(process.env.RACE_ENV_FILE || resolve(SITE_ROOT, '.dev.vars')),
   ]);
   const key = process.env.OPENAI_API_KEY || rootEnv.OPENAI_API_KEY;
   const admin = process.env.RACE_ADMIN_KEY || siteEnv.RACE_ADMIN_KEY;
@@ -45,7 +46,9 @@ async function loadConfiguration() {
   if (!configuredOrigin) throw new Error('GAME_ORIGIN を .dev.vars または環境変数に設定してください。');
   const origin = new URL(configuredOrigin).origin;
   if (!origin.startsWith('https://') && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) throw new Error('GAME_ORIGIN は HTTPS URL を指定してください。');
-  return { key, admin, origin };
+  return { key, admin, origin,
+    narrationEnabled: (process.env.NARRATION_ENABLED || rootEnv.NARRATION_ENABLED) !== '0',
+    narrationVoice: process.env.NARRATION_VOICE || rootEnv.NARRATION_VOICE || 'shida' };
 }
 
 export async function readEventStream(body, onEvent) {
@@ -79,6 +82,7 @@ function publicRun(run) {
     id: run.id, raceId: run.raceId, stage: run.stage, message: run.message,
     startedAt: run.startedAt, endedAt: run.endedAt, spectatorUrl: run.spectatorUrl,
     gamePhase: run.gamePhase, winner: run.winner, error: run.error,
+    narration: run.narrator?.status() ?? { status: run.config.narrationEnabled ? 'standby' : 'disabled' },
     players: Object.fromEntries(COLORS.map(color => {
       const p = run.players[color];
       return [color, { status: p.status, sessionId: p.sessionId, actions: p.actions,
@@ -121,6 +125,27 @@ function observeState(run, state) {
   run.winner = state.winner ?? null;
   // This is the game's public read model; player capabilities and API keys are not in it.
   run.finalState = structuredClone(state);
+  // Audio failures must never propagate into driving or the game clock.
+  try { run.narrator?.observe(state); } catch (error) { log(run, `実況: ${error.message}`); }
+}
+
+function startNarration(run) {
+  if (!run.config.narrationEnabled) return;
+  run.narrator = run.narratorFactory({
+    key: run.config.key, raceId: run.raceId, voice: run.config.narrationVoice || 'marin',
+    log: message => log(run, `実況: ${message}`),
+    publishAudio: async chunk => {
+      const path = `/api/races/${run.raceId}/narration/audio/${chunk.generationId}/${chunk.seq}`;
+      const response = await game(run, path, { method: 'POST', headers: { 'Content-Type': 'audio/wav' },
+        body: chunk.buffer, signal: AbortSignal.timeout(8000) });
+      const result = await response.json();
+      return result.url;
+    },
+    publishFeed: async feed => {
+      await game(run, `/api/races/${run.raceId}/narration`, { method: 'POST', body: JSON.stringify(feed), signal: AbortSignal.timeout(8000) });
+    },
+  });
+  run.narratorTask = run.narrator.start().catch(error => log(run, `実況への接続: ${error.message}`));
 }
 
 function safeText(run, value) {
@@ -323,6 +348,7 @@ async function executeRun(run, saveProof = persistProof) {
     if (spectator.origin !== run.config.origin || spectator.hash) throw new Error('観戦URLの形式が不正です。');
     run.spectatorUrl = spectator.href;
     if (run.stopRequested) { outcome = 'cancelled'; return; }
+    try { startNarration(run); } catch (error) { log(run, `実況の開始: ${error.message}`); }
     log(run, '独立した2つのComputer Useセッションを作成しています。');
     const created = await Promise.allSettled(COLORS.map(async color => {
       const session = await (await openAI(run, '', { method: 'POST', body: JSON.stringify({
@@ -379,7 +405,10 @@ async function executeRun(run, saveProof = persistProof) {
       }
       catch (error) { run.error ||= safeText(run, `レースの停止を確認できません: ${error.message}`); log(run, run.error); outcome = 'failed'; }
     }
-    await Promise.allSettled(COLORS.map(color => cleanupPlayer(run, color)));
+    await Promise.allSettled([
+      ...COLORS.map(color => cleanupPlayer(run, color)),
+      run.narrator?.finish({ cancelled: outcome !== 'completed' }),
+    ]);
     await Promise.allSettled(COLORS.map(color => run.players[color].streamTask).filter(Boolean));
     for (const color of COLORS) {
       const p = run.players[color];
@@ -408,7 +437,7 @@ async function readBody(request) {
   try { return JSON.parse(raw || '{}'); } catch { throw new RemoteError('JSON が不正です。', 400); }
 }
 
-export async function createOperatorServer({ port = Number(process.env.OPERATOR_PORT || 4180), proofFile = PROOF_FILE, loadConfig = loadConfiguration, saveProof = persistProof } = {}) {
+export async function createOperatorServer({ port = Number(process.env.OPERATOR_PORT || 4180), proofFile = PROOF_FILE, loadConfig = loadConfiguration, saveProof = persistProof, narratorFactory = createLiveNarrator } = {}) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('OPERATOR_PORT が不正です。');
   let current = null;
   let task = null;
@@ -449,6 +478,7 @@ export async function createOperatorServer({ port = Number(process.env.OPERATOR_
           if (closing) throw new RemoteError('オペレーターを終了しています。', 409);
           const seed = Number.isSafeInteger(body.seed) ? body.seed : Math.floor(Math.random() * 0x7fffffff);
           current = makeRun(config, seed, proofFile);
+          current.narratorFactory = narratorFactory;
           task = executeRun(current, saveProof).finally(() => { task = null; });
           send(status(), 202);
         } finally { starting = false; }

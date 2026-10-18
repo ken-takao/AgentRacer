@@ -10,6 +10,7 @@ import { createCourseFeatures, COURSE_NAMES } from "../lib/race-course";
 import type { CourseFeatures, RouteChoice } from "../lib/race-course";
 import { RacePreparation } from "./race-preparation";
 import { RaceAudio } from "./race-audio";
+import { NarrationBubble, RaceNarration } from "./race-narration";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleDot, Flag, Gauge, Maximize2, Monitor, Radio, Trophy, Zap } from "lucide-react";
 const RaceCircuit3D = lazy(() => import("./race-circuit-3d").then(module => ({ default: module.RaceCircuit3D })));
 
@@ -165,7 +166,7 @@ export function HomeScreen() {
     void pollLatest();
     return () => { disposed = true; ac.abort(); clearTimeout(timer); };
   }, []);
-  return <><SiteHeader /><main className="home-main"><section className="home-hero"><div className="eyebrow"><span className="tiny-line" />THE COMPUTER USE RACING EXPERIMENT</div><h1>Two agents.<br /><span>One finish line.</span></h1><p className="home-description">画面を見る。ハンドルを切る。勝利を狙う。<br />2つのAIエージェントが、リアルタイムで競うレース。</p><div className="hero-actions">{latest ? <a className="button button-lime" href={`/race/${enc(latest)}`}><Radio size={18} />レースを観戦する<ArrowUpRight size={19} /></a> : <span className="button button-muted">{!checked ? "レースを確認中…" : latestError ? "レース情報を取得できません" : "開催中のレースはありません"}</span>}<a className="button button-lime" href="/preview/roadster">3Dプレビュー<ArrowUpRight size={17} /></a><a className="subtle-link" href="http://127.0.0.1:4180/">オペレーター画面<ArrowUpRight size={15} /></a></div><div className="hero-facts"><span><b>02</b> INDEPENDENT AGENTS</span><span><b>03</b> LANES</span><span><b>∞</b> POSSIBILITIES</span></div></section><section className="home-track"><div className="track-topline"><span><CircleDot size={13} />TOKYO CIRCUIT</span><span>REAL-TIME SIMULATION</span></div><SpectatorCircuit race={previewRace(30)} decorative /><div className="home-versus"><span className="red-text">01 / SCARLET</span><span>VS</span><span className="blue-text">02 / COBALT</span></div></section><section className="how-it-works"><div><span className="step">01 / SEE</span><h2>それぞれの視点で</h2><p>独立したクラウドブラウザーで、相手車両・コース・障害物を観察。</p></div><div><span className="step">02 / DECIDE</span><h2>操作を決める</h2><p>Computer Useが進路・レーン・速度を判断。</p></div><div><span className="step">03 / RACE</span><h2>時間は止まらない</h2><p>判断している間もレースは進行。先にゴールしたAIの勝利。</p></div></section><p className="operator-note">対戦の開始は、主催者のローカルオペレーター画面から。観戦はこのサイトで楽しめます。</p></main><Footer /></>;
+  return <><SiteHeader /><main className="home-main"><section className="home-hero"><div className="eyebrow"><span className="tiny-line" />THE COMPUTER USE RACING EXPERIMENT</div><h1>Two agents.<br /><span>One finish line.</span></h1><p className="home-description">画面を見る。ハンドルを切る。勝利を狙う。<br />2つのAIエージェントが、リアルタイムで競うレース。</p><div className="hero-actions">{latest ? <a className="button button-lime" href={`/race/${enc(latest)}`}><Radio size={18} />レースを観戦する<ArrowUpRight size={19} /></a> : <span className="button button-muted">{!checked ? "レースを確認中…" : latestError ? "レース情報を取得できません" : "開催中のレースはありません"}</span>}<a className="button button-lime" href="/preview/roadster">3Dプレビュー<ArrowUpRight size={17} /></a><a className="subtle-link" href="/preview/narration">AI実況を試聴<ArrowUpRight size={15} /></a><a className="subtle-link" href="http://127.0.0.1:4180/">オペレーター画面<ArrowUpRight size={15} /></a></div><div className="hero-facts"><span><b>02</b> INDEPENDENT AGENTS</span><span><b>03</b> LANES</span><span><b>∞</b> POSSIBILITIES</span></div></section><section className="home-track"><div className="track-topline"><span><CircleDot size={13} />TOKYO CIRCUIT</span><span>REAL-TIME SIMULATION</span></div><SpectatorCircuit race={previewRace(30)} decorative /><div className="home-versus"><span className="red-text">01 / SCARLET</span><span>VS</span><span className="blue-text">02 / COBALT</span></div></section><section className="how-it-works"><div><span className="step">01 / SEE</span><h2>それぞれの視点で</h2><p>独立したクラウドブラウザーで、相手車両・コース・障害物を観察。</p></div><div><span className="step">02 / DECIDE</span><h2>操作を決める</h2><p>Computer Useが進路・レーン・速度を判断。</p></div><div><span className="step">03 / RACE</span><h2>時間は止まらない</h2><p>判断している間もレースは進行。先にゴールしたAIの勝利。</p></div></section><p className="operator-note">対戦の開始は、主催者のローカルオペレーター画面から。観戦はこのサイトで楽しめます。</p></main><Footer /></>;
 }
 export function RoadsterPreviewScreen() {
   const [initial] = useState(() => previewRace(0));
@@ -180,6 +181,87 @@ export function RoadsterPreviewScreen() {
     } };
   }, [initial]);
   return <div className="spectator-shell preview-shell"><SiteHeader /><main className="spectator-main"><div className="race-heading"><div><div className="eyebrow">TESLA ROADSTER / MODEL PREVIEW</div><h1>Roadster <em>preview.</em></h1><p>3Dサーキットのデモ走行です。実際のAI対戦とは別のプレビューです。</p></div><a className="subtle-link" href="/">ホームに戻る<ArrowUpRight size={15} /></a></div><section className="track-panel spectator-track"><div className="track-topline"><span><CircleDot size={13} />MODEL PREVIEW</span><span>RED · BLUE · 8 U/S</span></div><div className="spectator-stage"><SpectatorCircuit race={initial} sampleRace={sampleRace} /></div></section></main></div>;
+}
+export function NarrationPreviewScreen() {
+  const [initial] = useState(() => previewRace(0));
+  const [captions, setCaptions] = useState<{ id: string; text: string; startMs: number; endMs: number }[]>([]);
+  const [cursor, setCursor] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(90);
+  const [sampleError, setSampleError] = useState("");
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const start = useRef<number | null>(null);
+  const sampleRace = useCallback((now: number) => {
+    if (start.current === null) start.current = now;
+    const elapsed = now - start.current;
+    const progress = elapsed / 1000 * 8;
+    return { ...initial, now: elapsed, players: {
+      red: { ...initial.players.red, progress: progress % initial.course.length },
+      blue: { ...initial.players.blue, progress: (progress + 18) % initial.course.length },
+    } };
+  }, [initial]);
+  useEffect(() => {
+    const abort = new AbortController();
+    void fetch("/audio/hayate-commentary-demo.json", { signal: abort.signal }).then(async response => {
+      if (!response.ok) throw new Error("Sample unavailable");
+      const data = await response.json() as { captions?: typeof captions };
+      if (!Array.isArray(data.captions) || !data.captions.every(item => typeof item.id === "string" && typeof item.text === "string" && Number.isFinite(item.startMs) && Number.isFinite(item.endMs))) throw new Error("Invalid sample");
+      if (!abort.signal.aborted) setCaptions(data.captions);
+    }).catch(() => { if (!abort.signal.aborted) setSampleError("収録サンプルを読み込めませんでした"); });
+    return () => abort.abort();
+  }, []);
+  useEffect(() => {
+    if (!playing) return;
+    const timer = setInterval(() => setCursor((audioRef.current?.currentTime || 0) * 1000), 80);
+    return () => clearInterval(timer);
+  }, [playing]);
+  const playSample = async (silent: boolean, fromMs?: number) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.muted = silent;
+    audio.volume = volume / 100;
+    setMuted(silent);
+    if (fromMs !== undefined || audio.ended) {
+      audio.currentTime = (fromMs ?? 0) / 1000;
+      setCursor(fromMs ?? 0);
+    }
+    try { await audio.play(); setSampleError(""); }
+    catch { setSampleError("再生ボタンを押すと音声を有効にできます"); }
+  };
+  const caption = captions.filter(item => item.startMs <= cursor && cursor < item.endMs + 1200).at(-1);
+  const scenes = [{ label: "スタート", pattern: /スタート/ }, { label: "障害物", pattern: /障害物/ }, { label: "接触", pattern: /接触/ }, { label: "ゴール", pattern: /ゴール/ }];
+  return <div className="spectator-shell narration-preview-shell"><SiteHeader />
+    <audio ref={audioRef} src="/audio/hayate-commentary-demo.wav" preload="auto" hidden onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onTimeUpdate={() => setCursor((audioRef.current?.currentTime || 0) * 1000)} onError={() => setSampleError("収録音声を読み込めませんでした")} />
+    <main className="spectator-main">
+      <div className="race-heading"><div><div className="eyebrow">GPT-LIVEで生成した実況サンプル / 収録再生</div><h1>The voice of <em>the race.</em></h1></div><a className="subtle-link" href="/">ホームへ戻る<ArrowUpRight size={15} /></a></div>
+      <div className="spectator-toolbar narration-preview-controls">
+        <button type="button" aria-pressed={playing} onClick={() => playing ? audioRef.current?.pause() : void playSample(muted)}>{playing ? "一時停止" : "実況を再生"}</button>
+        <button type="button" onClick={() => void playSample(true)}>字幕だけで再生</button>
+        {scenes.map(scene => { const entry = captions.find(item => scene.pattern.test(item.text)); return <button type="button" className="narration-scene-jump" key={scene.label} disabled={!entry} onClick={() => void playSample(muted, entry ? Math.max(0, entry.startMs - 100) : 0)}>{scene.label}</button>; })}
+        <small>{(cursor / 1000).toFixed(1)}s / 34.9s · 収録サンプル</small>
+      </div>
+      <div className="race-dashboard">
+        <section className="track-panel spectator-track" aria-label="3Dと収録実況のプレビュー">
+          <div className="track-topline"><span><CircleDot size={13} />RECORDED GPT-LIVE SAMPLE</span><span>3D DEMO DRIVE</span></div>
+          <div className="spectator-stage"><SpectatorCircuit race={initial} sampleRace={sampleRace} /></div>
+          <NarrationBubble text={caption?.text || ""} active={Boolean(caption)} speaking={playing && !muted && volume > 0 && Boolean(caption)} recorded
+            status={sampleError || (playing ? "GPT-Liveの収録サンプルを再生しています" : "「実況を再生」でピット・ハヤテの声を試聴できます")}
+            audioState={!muted && playing ? "playing" : "off"} volume={volume}
+            onToggleAudio={() => { if (playing && !muted) { setMuted(true); if (audioRef.current) audioRef.current.muted = true; } else void playSample(false); }}
+            onVolumeChange={next => { setVolume(next); if (audioRef.current) audioRef.current.volume = next / 100; }} />
+          <div className="course-summary"><strong>音声・字幕は実際のGPT-Live出力</strong><span>3Dは別のデモ走行です</span></div>
+          <Progress race={initial} />
+        </section>
+        <aside className="race-sidebar" aria-label="エージェント画面の配置サンプル">
+          {(["red", "blue"] as PlayerId[]).map(player => <div className={`agent-observer ${player}`} key={player}>
+            <div className={`camera-panel ${player}`}><div className="camera-header"><span><Monitor size={15} /><b>{NAMES[player]}</b><small>LAYOUT PREVIEW</small></span></div><div className="camera-content"><div className="camera-placeholder"><Monitor size={32} /><p>ここにエージェントの画面を表示</p><span>実際の映像はAI対戦中に届きます</span></div></div></div>
+          </div>)}
+        </aside>
+      </div>
+      <div className="spectator-note"><CircleDot size={12} /><span>収録サンプルの再生です。新しい音声生成やAI対戦は行いません。3Dのデモ走行と実況の出来事は連動しません。</span></div>
+    </main>
+  </div>;
 }
 function Footer() { return <footer className="site-footer"><span>AGENT GRAND PRIX</span><span>BUILT WITH OPENAI AGENTS API + COMPUTER USE</span><span>DEMO / 2026</span></footer>; }
 function Progress({ race }: { race: Race }) {
@@ -240,6 +322,7 @@ function CountdownOverlay({ race, receivedAt }: { race: Race; receivedAt: number
   return <div className="countdown-overlay" role="status"><span>GET READY</span><strong>{countdown || "GO"}</strong></div>;
 }
 export function SpectatorScreen({ id }: { id: string }) {
+  const [narratorSpeaking, setNarratorSpeaking] = useState(false);
   const { data, error, receivedAt, retry, sampleRace } = useRace(id);
   const race = data?.state;
   const ended = race?.phase === "finished" || race?.phase === "cancelled";
@@ -249,7 +332,7 @@ export function SpectatorScreen({ id }: { id: string }) {
         <div><div className="eyebrow">LIVE EXPERIMENT / TOKYO CIRCUIT</div><h1>{ended ? <>The race <em>results.</em></> : race.phase === "lobby" ? <>Preparing the <em>grid.</em></> : <>The race is <em>on.</em></>}</h1></div>
         <div className="race-heading-actions">{ended && <NextRacePanel id={id} compact />}<RaceClock race={race} receivedAt={receivedAt} /></div>
       </div>
-      <div className="spectator-toolbar"><RaceAudio raceId={id} phase={race.phase} compact />{error && <div className="connection-banner" role="status">再接続中 · 最後の状態を表示</div>}</div>
+      <div className="spectator-toolbar"><RaceAudio raceId={id} phase={race.phase} compact ducked={narratorSpeaking} />{error && <div className="connection-banner" role="status">再接続中 · 最後の状態を表示</div>}</div>
       <div className="race-dashboard">
         <section className="track-panel spectator-track" aria-label="メインの3Dレース画面">
           <div className="track-topline"><span><i className={`status-dot ${race.phase === "racing" ? "active" : ""}`} />{PHASE_LABELS[race.phase]}</span><span>3D LIVE · {race.course.length} UNITS · 3 LANES</span></div>
@@ -258,6 +341,7 @@ export function SpectatorScreen({ id }: { id: string }) {
             {race.phase === "lobby" && <RacePreparation createdAt={race.createdAt} serverNow={race.updatedAt} receivedAt={receivedAt} players={race.players} />}
             {ended && <RaceOutcome race={race} />}
           </div>
+          <RaceNarration raceId={id} onSpeakingChange={setNarratorSpeaking} />
           {race.course.layout && <div className="course-summary"><strong>{COURSE_NAMES[race.course.layout]}</strong><span>2つの分岐 · 立体交差 · 車両同士の接触あり</span></div>}
           <Progress race={race} />
         </section>

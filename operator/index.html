@@ -6,7 +6,7 @@
 <div class="eyebrow">LOCAL OPERATOR · 2 INDEPENDENT BROWSERS</div><h1>Agent Grand Prix</h1>
 <p>2つのComputer Useエージェントが、同じコースをリアルタイムで走ります。<br>この画面から起動し、公開の観戦ページでレースと取得画面を見られます。</p>
 <div class="actions"><button id="start" class="primary">2つのエージェントを起動</button><button id="stop" class="secondary" disabled>レースを停止</button><button id="reset" class="secondary" disabled>表示をリセット</button><a id="spectator" class="button hidden" target="_blank" rel="noopener noreferrer">観戦ページを開く ↗</a></div>
-<p id="restart-help" class="note">開始すると新しい観戦タブを開きます。2つのセッションは毎回新しく作成します。</p><section class="status"><div class="status-head"><strong id="message">状態を取得しています。</strong><span id="stage" class="pill">IDLE</span></div><p id="phase">GAME —</p><div id="error" class="error"></div></section>
+<p id="restart-help" class="note">開始すると新しい観戦タブを開きます。2つのセッションは毎回新しく作成します。</p><section class="status"><div class="status-head"><strong id="message">状態を取得しています。</strong><span id="stage" class="pill">IDLE</span></div><p id="phase">GAME —</p><p id="narration" class="note">AI実況 · レース開始時に接続</p><div id="error" class="error"></div></section>
 <section class="cards"><article class="card red"><h2>RED DRIVER</h2><div class="metrics"><div><strong id="red-actions">0</strong><span>ブラウザー操作</span></div><div><strong id="red-images">0</strong><span>取得画面</span></div></div><p id="red-status">待機中</p><div id="red-session" class="session">—</div><p id="red-cleanup" class="note"></p></article><article class="card blue"><h2>BLUE DRIVER</h2><div class="metrics"><div><strong id="blue-actions">0</strong><span>ブラウザー操作</span></div><div><strong id="blue-images">0</strong><span>取得画面</span></div></div><p id="blue-status">待機中</p><div id="blue-session" class="session">—</div><p id="blue-cleanup" class="note"></p></article></section>
 <section class="log"><h2>実行ログ</h2><div id="logs" class="log-list"></div></section>
 <p class="note">APIキーはこのPCのサーバー側で読み込みます。実行するとOpenAI APIを利用します。観戦画面のブラウザー画像は操作ごとに届くスクリーンショットです。</p>
@@ -20,6 +20,9 @@ let requestError = '';
 
 function draw(state) {
   $('message').textContent = state.message;
+  const narration = state.narration || {};
+  const narrationLabels = {standby:'接続待ち',connecting:'接続中',live:'音声・字幕を配信中',ended:'配信終了',error:'接続エラー（レースは続行）',disabled:'無効'};
+  $('narration').textContent = 'AI実況 · GPT-Live · ' + (narrationLabels[narration.status] || '待機中');
   $('stage').textContent = state.stage.toUpperCase();
   $('phase').textContent = 'GAME ' + (state.gamePhase || '—') + (state.winner ? ' · WINNER ' + String(state.winner).toUpperCase() : '');
   $('error').textContent = requestError || state.error || '';
