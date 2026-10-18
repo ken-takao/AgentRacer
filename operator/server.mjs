@@ -224,18 +224,22 @@ async function handleApprovals(run, color) {
   }
 }
 
-function publishInBackground(run, color, kind, publish) {
+export function publishInBackground(run, color, kind, publish) {
   const p = run.players[color];
   // Coalesce pending visual updates. Public uploads must not delay reading the next CU frame.
   p.publications.set(kind, publish);
   if (p.publicationTask) return;
-  p.publicationTask = (async () => {
-    while (p.publications.size) {
-      const [key, task] = p.publications.entries().next().value;
-      p.publications.delete(key);
-      try { await task(); } catch (error) { log(run, `画面表示の更新: ${error.message}`, color); }
-    }
-  })().finally(() => { p.publicationTask = null; });
+  // Start after assignment, and clear the marker in the same continuation as
+  // the final empty-queue check so a new update cannot be stranded in between.
+  p.publicationTask = Promise.resolve().then(async () => {
+    try {
+      while (p.publications.size) {
+        const [key, task] = p.publications.entries().next().value;
+        p.publications.delete(key);
+        try { await task(); } catch (error) { log(run, `画面表示の更新: ${error.message}`, color); }
+      }
+    } finally { p.publicationTask = null; }
+  });
 }
 
 async function publishDecision(run, color, decision) {
